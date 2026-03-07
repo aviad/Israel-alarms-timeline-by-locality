@@ -22,12 +22,14 @@ import argparse
 import csv
 import datetime
 import io
+import math
 import pathlib
 from zoneinfo import ZoneInfo
 
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
 import matplotlib.font_manager as fm
+from matplotlib.path import Path
 import matplotlib.pyplot as plt
 import requests
 import seaborn as sns
@@ -50,13 +52,25 @@ API_CACHE_FILE = pathlib.Path("alerts_cache.json")
 API_CACHE_MAX_AGE_MINUTES = 2
 
 BG_COLOR = "#f0ede3"
-DOT_COLOR = "#333333"
+NIGHT_DOT_COLOR = "#333333"  # dark for night hours (0–7, 21–24)
+DAY_DOT_COLOR = "#888888"    # lighter for daytime hours
+DOT_COLOR = NIGHT_DOT_COLOR  # alias used in bar/text modes
 DOT_S = 28  # scatter area for a single-count dot (points²)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Register ET-Book fonts once at import time
 for _f in pathlib.Path.home().glob(".local/share/fonts/et-book/*.ttf"):
     fm.fontManager.addfont(str(_f))
+
+
+def _make_wedge_marker(start_frac: float, end_frac: float, n: int = 32) -> Path:
+    """Pie-wedge Path for scatter marker: clockwise from top, fractions 0–1."""
+    t0 = math.pi / 2 - start_frac * 2 * math.pi
+    t1 = math.pi / 2 - end_frac * 2 * math.pi
+    thetas = [t0 + (t1 - t0) * k / (n - 1) for k in range(n)]
+    verts = [(0.0, 0.0)] + [(math.cos(t), math.sin(t)) for t in thetas] + [(0.0, 0.0)]
+    codes = [Path.MOVETO] + [Path.LINETO] * n + [Path.CLOSEPOLY]
+    return Path(verts, codes)
 
 
 def parse_args() -> argparse.Namespace:
@@ -95,7 +109,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--daily-total",
-        default="none",
+        default="dot",
         choices=["none", "text", "bar", "dot"],
         help="Show daily totals: none | text (count label) | bar (mini bar chart) | dot (sized dot)",
     )
@@ -261,6 +275,10 @@ def plot(
         day: sum(bins.get((day, h), 0) for h in range(0, 24, bin_hours)) for day in days
     }
     max_daily = max(daily_totals.values(), default=1)
+    daily_night = {
+        day: sum(bins.get((day, h), 0) for h in range(0, 24, bin_hours) if h < 7 or h >= 21)
+        for day in days
+    }
 
     sns.set_theme(style="ticks", font_scale=1.0)
     plt.rcParams["font.family"] = "serif"
@@ -286,11 +304,12 @@ def plot(
         for h in range(0, 24, bin_hours):
             count = bins.get((day, h), 0)
             if count > 0:
+                dot_color = NIGHT_DOT_COLOR if (h < 7 or h >= 21) else DAY_DOT_COLOR
                 ax.scatter(
                     [h + bin_hours / 2],
                     [y],
                     s=DOT_S * count,
-                    color=DOT_COLOR,
+                    color=dot_color,
                     zorder=3,
                     clip_on=False,
                 )
@@ -369,19 +388,20 @@ def plot(
         for i, day in enumerate(days):
             tot = daily_totals[day]
             if tot:
-                ax.scatter(
-                    [DOT_X], [-i], s=DOT_S * tot, color=grey, zorder=3, clip_on=False
-                )
-                ax.text(
-                    DOT_X,
-                    -i,
-                    str(tot),
-                    fontsize=6,
-                    color="white",
-                    va="center",
-                    ha="center",
-                    zorder=4,
-                )
+                night = daily_night[day]
+                night_frac = night / tot
+                s = DOT_S * tot
+                if night_frac <= 0:
+                    ax.scatter([DOT_X], [-i], s=s, color=DAY_DOT_COLOR, zorder=3, clip_on=False)
+                elif night_frac >= 1:
+                    ax.scatter([DOT_X], [-i], s=s, color=NIGHT_DOT_COLOR, zorder=3, clip_on=False)
+                else:
+                    ax.scatter([DOT_X], [-i], s=s, marker=_make_wedge_marker(0, night_frac),
+                               color=NIGHT_DOT_COLOR, zorder=3, clip_on=False)
+                    ax.scatter([DOT_X], [-i], s=s, marker=_make_wedge_marker(night_frac, 1.0),
+                               color=DAY_DOT_COLOR, zorder=3, clip_on=False)
+                ax.text(DOT_X, -i, str(tot), fontsize=6, color="white",
+                        va="center", ha="center", zorder=4)
 
     date_range = f"{times[0].strftime('%b %d')} – {times[-1].strftime('%b %d, %Y')}"
     ax.set_title(
@@ -421,7 +441,7 @@ def plot(
             [leg_x],
             [leg_y],
             s=DOT_S * c,
-            color=DOT_COLOR,
+            color=NIGHT_DOT_COLOR,
             transform=ax.transAxes,
             clip_on=False,
             zorder=4,
@@ -437,6 +457,16 @@ def plot(
         va="center",
         ha="right",
     )
+
+    # Night / day colour key — same row, to the left of "alerts per Xh:" label
+    # leg_x at this point is where "alerts per Xh:" right-aligns; step past its text width
+    lx = leg_x - 0.18
+    ax.scatter([lx], [leg_y], s=DOT_S * 2, marker=_make_wedge_marker(0.5, 1.0),
+               color=NIGHT_DOT_COLOR, transform=ax.transAxes, clip_on=False, zorder=4)
+    ax.scatter([lx], [leg_y], s=DOT_S * 2, marker=_make_wedge_marker(0, 0.5),
+               color=DAY_DOT_COLOR, transform=ax.transAxes, clip_on=False, zorder=4)
+    ax.text(lx - 0.012, leg_y, "night/day:", fontsize=9, color=grey,
+            va="center", ha="right", transform=ax.transAxes)
 
     plt.tight_layout()
     plt.savefig(output, dpi=150, bbox_inches="tight")
