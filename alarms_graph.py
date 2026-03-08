@@ -36,7 +36,6 @@ import seaborn as sns
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 DEFAULT_AREA_FILTER = "תל אביב - מרכז העיר"
-DEFAULT_AREA_LABEL = "Tel Aviv - City Center"
 DEFAULT_BIN_HOURS = 1
 DEFAULT_START = "2026-02-28"
 
@@ -82,7 +81,7 @@ def parse_args() -> argparse.Namespace:
         help="Hebrew substring to filter cities (empty = all)",
     )
     p.add_argument(
-        "--label", default=DEFAULT_AREA_LABEL, help="English label for chart title"
+        "--label", default=None, help="English label for chart title (default: translated from the area)"
     )
     p.add_argument(
         "--start",
@@ -240,6 +239,16 @@ def load_api_alerts(
             times.append(dt)
             break
     return times
+
+
+def load_city_translations(csv_path: str = "cities.csv") -> dict[str, str]:
+    """Return {hebrew: english} from cities.csv."""
+    path = pathlib.Path(csv_path)
+    if not path.exists():
+        return {}
+    with path.open(encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        return {row["hebrew"]: row["english"] for row in reader}
 
 
 def plot(
@@ -496,6 +505,9 @@ def plot(
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.label is None:
+        translations = load_city_translations()
+        args.label = translations.get(args.area, args.area or "All Areas")
     csv_text, data_cutoff = fetch_csv()
     times, seen_ids = load_alerts(csv_text, args.area, args.threat, args.start)
     api_data = fetch_api_data()
