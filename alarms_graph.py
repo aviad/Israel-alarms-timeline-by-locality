@@ -109,7 +109,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--style",
         choices=["dots", "lines"],
-        default="dots",
+        default="lines",
         help="dots: binned scatter (default); lines: narrow tick at exact alert time",
     )
     return p.parse_args()
@@ -422,14 +422,37 @@ def plot(
     if style == "dots":
         leg_label = f"alerts per {bin_hours}h:"
         for c, lbl in [(5, "5"), (1, "1")]:
-            ax.text(leg_x, leg_y, lbl, transform=ax.transAxes, fontsize=9,
-                    color=grey, va="center", ha="right")
+            ax.text(
+                leg_x,
+                leg_y,
+                lbl,
+                transform=ax.transAxes,
+                fontsize=9,
+                color=grey,
+                va="center",
+                ha="right",
+            )
             leg_x -= 0.022
-            ax.scatter([leg_x], [leg_y], s=DOT_S * c, color=NIGHT_DOT_COLOR,
-                       transform=ax.transAxes, clip_on=False, zorder=4)
+            ax.scatter(
+                [leg_x],
+                [leg_y],
+                s=DOT_S * c,
+                color=NIGHT_DOT_COLOR,
+                transform=ax.transAxes,
+                clip_on=False,
+                zorder=4,
+            )
             leg_x -= 0.03
-        ax.text(leg_x, leg_y, leg_label, transform=ax.transAxes, fontsize=9,
-                color=grey, va="center", ha="right")
+        ax.text(
+            leg_x,
+            leg_y,
+            leg_label,
+            transform=ax.transAxes,
+            fontsize=9,
+            color=grey,
+            va="center",
+            ha="right",
+        )
         lx = leg_x - 0.18
     else:
         # In lines mode: night/day key sits at the right end
