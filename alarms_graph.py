@@ -54,7 +54,6 @@ API_CACHE_MAX_AGE_MINUTES = 2
 BG_COLOR = "#f0ede3"
 NIGHT_DOT_COLOR = "#333333"  # dark for night hours (0–7, 21–24)
 DAY_DOT_COLOR = "#888888"    # lighter for daytime hours
-DOT_COLOR = NIGHT_DOT_COLOR  # alias used in bar/text modes
 DOT_S = 28  # scatter area for a single-count dot (points²)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -106,12 +105,6 @@ def parse_args() -> argparse.Namespace:
         "--output",
         default="alarms_frequency.png",
         help="Output file path (default: %(default)s)",
-    )
-    p.add_argument(
-        "--daily-total",
-        default="dot",
-        choices=["none", "text", "bar", "dot"],
-        help="Show daily totals: none | text (count label) | bar (mini bar chart) | dot (sized dot)",
     )
     return p.parse_args()
 
@@ -249,7 +242,6 @@ def plot(
     bin_hours: int,
     output: str,
     start_date: str = DEFAULT_START,
-    daily_total: str = "none",
     data_cutoff: datetime.datetime | None = None,
 ):
     """One row per day, x = hour of day (0–24). Compact vertical layout."""
@@ -274,7 +266,6 @@ def plot(
     daily_totals = {
         day: sum(bins.get((day, h), 0) for h in range(0, 24, bin_hours)) for day in days
     }
-    max_daily = max(daily_totals.values(), default=1)
     daily_night = {
         day: sum(bins.get((day, h), 0) for h in range(0, 24, bin_hours) if h < 7 or h >= 21)
         for day in days
@@ -314,18 +305,8 @@ def plot(
                     clip_on=False,
                 )
 
-    # ── Daily total annotations ───────────────────────────────────────────
-    BAR_SEP = 24.8  # x where bar area starts
-    BAR_WIDTH = 3.0  # max bar length in data units
-    if daily_total == "text":
-        x_end = 27.5
-    elif daily_total == "bar":
-        x_end = BAR_SEP + BAR_WIDTH + 1.5
-    elif daily_total == "dot":
-        x_end = 26.5
-    else:
-        x_end = 24
-
+    # ── Daily total dots ─────────────────────────────────────────────────
+    x_end = 26.5
     ax.set_xlim(0, x_end)
     ax.set_ylim(-n_days + 0.5, 0.5)
     ax.set_yticks(range(0, -n_days, -1))
@@ -341,67 +322,25 @@ def plot(
     sns.despine(ax=ax, left=True, right=True, top=True, bottom=False, offset=6)
 
     grey = "#888888"
-    if daily_total == "text":
-        ax.text(25.0, 0.55, "total", fontsize=7, color=grey, va="bottom", ha="left")
-        for i, day in enumerate(days):
-            tot = daily_totals[day]
-            ax.text(
-                25.0,
-                -i,
-                str(tot) if tot else "–",
-                fontsize=7,
-                color=DOT_COLOR if tot else grey,
-                va="center",
-                ha="left",
-            )
-
-    elif daily_total == "bar":
-        ax.text(
-            BAR_SEP + 0.1, 0.55, "total", fontsize=7, color=grey, va="bottom", ha="left"
-        )
-        for i, day in enumerate(days):
-            tot = daily_totals[day]
-            if tot:
-                width = (tot / max_daily) * BAR_WIDTH
-                ax.barh(
-                    -i,
-                    width,
-                    left=BAR_SEP + 0.1,
-                    height=0.45,
-                    color=DOT_COLOR,
-                    alpha=0.35,
-                    zorder=2,
-                )
-                ax.text(
-                    BAR_SEP + 0.1 + width + 0.1,
-                    -i,
-                    str(tot),
-                    fontsize=7,
-                    color=DOT_COLOR,
-                    va="center",
-                    ha="left",
-                )
-
-    elif daily_total == "dot":
-        DOT_X = 25.5
-        ax.text(DOT_X, 0.55, "total", fontsize=7, color=grey, va="bottom", ha="center")
-        for i, day in enumerate(days):
-            tot = daily_totals[day]
-            if tot:
-                night = daily_night[day]
-                night_frac = night / tot
-                s = DOT_S * tot
-                if night_frac <= 0:
-                    ax.scatter([DOT_X], [-i], s=s, color=DAY_DOT_COLOR, zorder=3, clip_on=False)
-                elif night_frac >= 1:
-                    ax.scatter([DOT_X], [-i], s=s, color=NIGHT_DOT_COLOR, zorder=3, clip_on=False)
-                else:
-                    ax.scatter([DOT_X], [-i], s=s, marker=_make_wedge_marker(0, night_frac),
-                               color=NIGHT_DOT_COLOR, zorder=3, clip_on=False)
-                    ax.scatter([DOT_X], [-i], s=s, marker=_make_wedge_marker(night_frac, 1.0),
-                               color=DAY_DOT_COLOR, zorder=3, clip_on=False)
-                ax.text(DOT_X, -i, str(tot), fontsize=6, color="white",
-                        va="center", ha="center", zorder=4)
+    DOT_X = 25.5
+    ax.text(DOT_X, 0.55, "total", fontsize=7, color=grey, va="bottom", ha="center")
+    for i, day in enumerate(days):
+        tot = daily_totals[day]
+        if tot:
+            night = daily_night[day]
+            night_frac = night / tot
+            s = DOT_S * tot
+            if night_frac <= 0:
+                ax.scatter([DOT_X], [-i], s=s, color=DAY_DOT_COLOR, zorder=3, clip_on=False)
+            elif night_frac >= 1:
+                ax.scatter([DOT_X], [-i], s=s, color=NIGHT_DOT_COLOR, zorder=3, clip_on=False)
+            else:
+                ax.scatter([DOT_X], [-i], s=s, marker=_make_wedge_marker(0, night_frac),
+                           color=NIGHT_DOT_COLOR, zorder=3, clip_on=False)
+                ax.scatter([DOT_X], [-i], s=s, marker=_make_wedge_marker(night_frac, 1.0),
+                           color=DAY_DOT_COLOR, zorder=3, clip_on=False)
+            ax.text(DOT_X, -i, str(tot), fontsize=6, color="white",
+                    va="center", ha="center", zorder=4)
 
     date_range = f"{times[0].strftime('%b %d')} – {times[-1].strftime('%b %d, %Y')}"
     ax.set_title(
@@ -459,7 +398,6 @@ def plot(
     )
 
     # Night / day colour key — same row, to the left of "alerts per Xh:" label
-    # leg_x at this point is where "alerts per Xh:" right-aligns; step past its text width
     lx = leg_x - 0.18
     ax.scatter([lx], [leg_y], s=DOT_S * 2, marker=_make_wedge_marker(0.5, 1.0),
                color=NIGHT_DOT_COLOR, transform=ax.transAxes, clip_on=False, zorder=4)
@@ -490,6 +428,5 @@ if __name__ == "__main__":
         args.bin_hours,
         args.output,
         args.start,
-        args.daily_total,
         data_cutoff,
     )
