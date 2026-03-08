@@ -81,7 +81,9 @@ def parse_args() -> argparse.Namespace:
         help="Hebrew substring to filter cities (empty = all)",
     )
     p.add_argument(
-        "--label", default=None, help="English label for chart title (default: translated from the area)"
+        "--label",
+        default=None,
+        help="English label for chart title (default: translated from the area)",
     )
     p.add_argument(
         "--start",
@@ -510,7 +512,11 @@ if __name__ == "__main__":
         args.label = translations.get(args.area, args.area or "All Areas")
     csv_text, data_cutoff = fetch_csv()
     times, seen_ids = load_alerts(csv_text, args.area, args.threat, args.start)
-    api_data = fetch_api_data()
+    try:
+        api_data = fetch_api_data()
+    except Exception:
+        print("Fetching latest alarms failed")
+        api_data = []
     api_times = load_api_alerts(api_data, args.area, args.threat, args.start, seen_ids)
     if api_times:
         print(f"  +{len(api_times)} alerts from tzevaadom API.")
