@@ -1,2 +1,5 @@
 alarms_cache.csv
 alerts_cache.json
+alarms_cache_time.txt
+tzevaadom_last_hour.json
+session_id.txt
