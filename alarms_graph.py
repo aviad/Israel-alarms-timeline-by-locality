@@ -53,7 +53,7 @@ API_CACHE_MAX_AGE_MINUTES = 2
 
 BG_COLOR = "#f0ede3"
 NIGHT_DOT_COLOR = "#333333"  # dark for night hours (0–7, 21–24)
-DAY_DOT_COLOR = "#888888"    # lighter for daytime hours
+DAY_DOT_COLOR = "#888888"  # lighter for daytime hours
 DOT_S = 28  # scatter area for a single-count dot (points²)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -105,6 +105,12 @@ def parse_args() -> argparse.Namespace:
         "--output",
         default="alarms_frequency.png",
         help="Output file path (default: %(default)s)",
+    )
+    p.add_argument(
+        "--style",
+        choices=["dots", "lines"],
+        default="dots",
+        help="dots: binned scatter (default); lines: narrow tick at exact alert time",
     )
     return p.parse_args()
 
@@ -243,6 +249,7 @@ def plot(
     output: str,
     start_date: str = DEFAULT_START,
     data_cutoff: datetime.datetime | None = None,
+    style: str = "dots",
 ):
     """One row per day, x = hour of day (0–24). Compact vertical layout."""
     if not times:
@@ -267,7 +274,9 @@ def plot(
         day: sum(bins.get((day, h), 0) for h in range(0, 24, bin_hours)) for day in days
     }
     daily_night = {
-        day: sum(bins.get((day, h), 0) for h in range(0, 24, bin_hours) if h < 7 or h >= 21)
+        day: sum(
+            bins.get((day, h), 0) for h in range(0, 24, bin_hours) if h < 7 or h >= 21
+        )
         for day in days
     }
 
@@ -276,7 +285,7 @@ def plot(
     plt.rcParams["font.serif"] = ["ETBembo", "Palatino", "Georgia", "DejaVu Serif"]
 
     n_days = len(days)
-    fig, ax = plt.subplots(figsize=(8, max(3, n_days * 0.5 + 1.5)))
+    fig, ax = plt.subplots(figsize=(8, max(3, n_days * 0.32 + 1.5)))
     fig.patch.set_facecolor(BG_COLOR)
     ax.set_facecolor(BG_COLOR)
 
@@ -288,22 +297,43 @@ def plot(
     cutoff_date = now.date()
     cutoff_hour = now.hour + now.minute / 60
 
+    # Group raw times by date for lines mode
+    times_by_day: dict = {}
+    for t in times:
+        times_by_day.setdefault(t.date(), []).append(t)
+
     for i, day in enumerate(days):
         y = -i
         line_end = cutoff_hour if day == cutoff_date else 24
         ax.plot([0, line_end], [y, y], color="#cccccc", linewidth=0.4, zorder=1)
-        for h in range(0, 24, bin_hours):
-            count = bins.get((day, h), 0)
-            if count > 0:
-                dot_color = NIGHT_DOT_COLOR if (h < 7 or h >= 21) else DAY_DOT_COLOR
-                ax.scatter(
-                    [h + bin_hours / 2],
-                    [y],
-                    s=DOT_S * count,
-                    color=dot_color,
-                    zorder=3,
-                    clip_on=False,
+        if style == "lines":
+            for t in times_by_day.get(day, []):
+                x = t.hour + t.minute / 60 + t.second / 3600
+                dot_color = (
+                    NIGHT_DOT_COLOR if (t.hour < 7 or t.hour >= 21) else DAY_DOT_COLOR
                 )
+                ax.plot(
+                    [x, x],
+                    [y - 0.12, y + 0.12],
+                    color=dot_color,
+                    linewidth=0.8,
+                    solid_capstyle="butt",
+                    zorder=3,
+                    clip_on=True,
+                )
+        else:
+            for h in range(0, 24, bin_hours):
+                count = bins.get((day, h), 0)
+                if count > 0:
+                    dot_color = NIGHT_DOT_COLOR if (h < 7 or h >= 21) else DAY_DOT_COLOR
+                    ax.scatter(
+                        [h + bin_hours / 2],
+                        [y],
+                        s=DOT_S * count,
+                        color=dot_color,
+                        zorder=3,
+                        clip_on=False,
+                    )
 
     # ── Daily total dots ─────────────────────────────────────────────────
     x_end = 26.5
@@ -331,16 +361,42 @@ def plot(
             night_frac = night / tot
             s = DOT_S * tot
             if night_frac <= 0:
-                ax.scatter([DOT_X], [-i], s=s, color=DAY_DOT_COLOR, zorder=3, clip_on=False)
+                ax.scatter(
+                    [DOT_X], [-i], s=s, color=DAY_DOT_COLOR, zorder=3, clip_on=False
+                )
             elif night_frac >= 1:
-                ax.scatter([DOT_X], [-i], s=s, color=NIGHT_DOT_COLOR, zorder=3, clip_on=False)
+                ax.scatter(
+                    [DOT_X], [-i], s=s, color=NIGHT_DOT_COLOR, zorder=3, clip_on=False
+                )
             else:
-                ax.scatter([DOT_X], [-i], s=s, marker=_make_wedge_marker(0, night_frac),
-                           color=NIGHT_DOT_COLOR, zorder=3, clip_on=False)
-                ax.scatter([DOT_X], [-i], s=s, marker=_make_wedge_marker(night_frac, 1.0),
-                           color=DAY_DOT_COLOR, zorder=3, clip_on=False)
-            ax.text(DOT_X, -i, str(tot), fontsize=6, color="white",
-                    va="center", ha="center", zorder=4)
+                ax.scatter(
+                    [DOT_X],
+                    [-i],
+                    s=s,
+                    marker=_make_wedge_marker(0, night_frac),
+                    color=NIGHT_DOT_COLOR,
+                    zorder=3,
+                    clip_on=False,
+                )
+                ax.scatter(
+                    [DOT_X],
+                    [-i],
+                    s=s,
+                    marker=_make_wedge_marker(night_frac, 1.0),
+                    color=DAY_DOT_COLOR,
+                    zorder=3,
+                    clip_on=False,
+                )
+            ax.text(
+                DOT_X,
+                -i,
+                str(tot),
+                fontsize=6,
+                color="white",
+                va="center",
+                ha="center",
+                zorder=4,
+            )
 
     date_range = f"{times[0].strftime('%b %d')} – {times[-1].strftime('%b %d, %Y')}"
     ax.set_title(
@@ -360,51 +416,54 @@ def plot(
         va="bottom",
     )
 
-    # ── Dot-size legend (built right-to-left) ────────────────────────────
-    leg_label = f"alerts per {bin_hours}h:"
+    # ── Legend ───────────────────────────────────────────────────────────
     leg_x = 24 / x_end
     leg_y = 1.065
-    for c, lbl in [(5, "5"), (1, "1")]:
-        ax.text(
-            leg_x,
-            leg_y,
-            lbl,
-            transform=ax.transAxes,
-            fontsize=9,
-            color=grey,
-            va="center",
-            ha="right",
-        )
-        leg_x -= 0.022
-        ax.scatter(
-            [leg_x],
-            [leg_y],
-            s=DOT_S * c,
-            color=NIGHT_DOT_COLOR,
-            transform=ax.transAxes,
-            clip_on=False,
-            zorder=4,
-        )
-        leg_x -= 0.03
-    ax.text(
-        leg_x,
-        leg_y,
-        leg_label,
+    if style == "dots":
+        leg_label = f"alerts per {bin_hours}h:"
+        for c, lbl in [(5, "5"), (1, "1")]:
+            ax.text(leg_x, leg_y, lbl, transform=ax.transAxes, fontsize=9,
+                    color=grey, va="center", ha="right")
+            leg_x -= 0.022
+            ax.scatter([leg_x], [leg_y], s=DOT_S * c, color=NIGHT_DOT_COLOR,
+                       transform=ax.transAxes, clip_on=False, zorder=4)
+            leg_x -= 0.03
+        ax.text(leg_x, leg_y, leg_label, transform=ax.transAxes, fontsize=9,
+                color=grey, va="center", ha="right")
+        lx = leg_x - 0.18
+    else:
+        # In lines mode: night/day key sits at the right end
+        lx = leg_x
+    ax.scatter(
+        [lx],
+        [leg_y],
+        s=DOT_S * 2,
+        marker=_make_wedge_marker(0.5, 1.0),
+        color=NIGHT_DOT_COLOR,
         transform=ax.transAxes,
+        clip_on=False,
+        zorder=4,
+    )
+    ax.scatter(
+        [lx],
+        [leg_y],
+        s=DOT_S * 2,
+        marker=_make_wedge_marker(0, 0.5),
+        color=DAY_DOT_COLOR,
+        transform=ax.transAxes,
+        clip_on=False,
+        zorder=4,
+    )
+    ax.text(
+        lx - 0.012,
+        leg_y,
+        "night/day:",
         fontsize=9,
         color=grey,
         va="center",
         ha="right",
+        transform=ax.transAxes,
     )
-
-    # Night / day colour key — same row, to the left of "alerts per Xh:" label
-    lx = leg_x - 0.18
-    ax.scatter([lx], [leg_y], s=DOT_S * 2, marker=_make_wedge_marker(0.5, 1.0),
-               color=NIGHT_DOT_COLOR, transform=ax.transAxes, clip_on=False, zorder=4)
-    ax.scatter([lx], [leg_y], s=DOT_S * 2, marker=_make_wedge_marker(0, 0.5),
-               color=DAY_DOT_COLOR, transform=ax.transAxes, clip_on=False, zorder=4)
-    ax.text(lx - 0.012, leg_y, "night/day:", fontsize=9, color=grey,
-            va="center", ha="right", transform=ax.transAxes)
 
     plt.tight_layout()
     plt.savefig(output, dpi=150, bbox_inches="tight")
@@ -429,4 +488,5 @@ if __name__ == "__main__":
         args.output,
         args.start,
         data_cutoff,
+        args.style,
     )
