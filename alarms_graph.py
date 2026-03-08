@@ -19,56 +19,37 @@ Usage:
 """
 
 import argparse
-import csv
 import datetime
-import io
-import math
 import pathlib
 from zoneinfo import ZoneInfo
 
+import matplotlib.font_manager as fm
+import requests
+
+from alarms_core import (
+    ALARMS_CSV_URL,
+    CITY_TRANSLATIONS,
+    DEFAULT_AREA_FILTER,
+    DEFAULT_BIN_HOURS,
+    DEFAULT_START,
+    TZEVAADOM_API_URL,
+    load_alerts,
+    load_api_alerts,
+    render_chart,
+)
+
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
-import matplotlib.font_manager as fm
-from matplotlib.path import Path
-import matplotlib.pyplot as plt
-import requests
-import seaborn as sns
-
-# ── Defaults ─────────────────────────────────────────────────────────────────
-DEFAULT_AREA_FILTER = "תל אביב - מרכז העיר"
-DEFAULT_BIN_HOURS = 1
-DEFAULT_START = "2026-02-28"
-
-ALARMS_CSV_URL = (
-    "https://raw.githubusercontent.com/yuval-harpaz/alarms/master/data/alarms.csv"
-)
 CACHE_FILE = pathlib.Path("alarms_cache.csv")
 CACHE_TIME_FILE = pathlib.Path("alarms_cache_time.txt")
 CACHE_MAX_AGE_MINUTES = 30
 
-TZEVAADOM_API_URL = "https://api.tzevaadom.co.il/alerts-history/"
 API_CACHE_FILE = pathlib.Path("alerts_cache.json")
 API_CACHE_MAX_AGE_MINUTES = 2
-
-BG_COLOR = "#f0ede3"
-NIGHT_DOT_COLOR = "#333333"  # dark for night hours (0–7, 21–24)
-DAY_DOT_COLOR = "#888888"  # lighter for daytime hours
-DOT_S = 28  # scatter area for a single-count dot (points²)
-# ─────────────────────────────────────────────────────────────────────────────
 
 # Register ET-Book fonts once at import time
 for _f in pathlib.Path.home().glob(".local/share/fonts/et-book/*.ttf"):
     fm.fontManager.addfont(str(_f))
-
-
-def _make_wedge_marker(start_frac: float, end_frac: float, n: int = 32) -> Path:
-    """Pie-wedge Path for scatter marker: clockwise from top, fractions 0–1."""
-    t0 = math.pi / 2 - start_frac * 2 * math.pi
-    t1 = math.pi / 2 - end_frac * 2 * math.pi
-    thetas = [t0 + (t1 - t0) * k / (n - 1) for k in range(n)]
-    verts = [(0.0, 0.0)] + [(math.cos(t), math.sin(t)) for t in thetas] + [(0.0, 0.0)]
-    codes = [Path.MOVETO] + [Path.LINETO] * n + [Path.CLOSEPOLY]
-    return Path(verts, codes)
 
 
 def parse_args() -> argparse.Namespace:
@@ -178,338 +159,11 @@ def fetch_api_data() -> list[dict]:
     return data
 
 
-def load_alerts(
-    csv_text: str, area_filter: str, threat: int, start: str
-) -> tuple[list[datetime.datetime], set[str]]:
-    """Parse CSV and return (deduplicated alert times matching filters, seen ids)."""
-    cutoff = datetime.datetime.strptime(start, "%Y-%m-%d")
-    seen_ids: set[str] = set()
-    times = []
-
-    reader = csv.DictReader(io.StringIO(csv_text))
-    for row in reader:
-        # Time filter (quick skip for old rows)
-        dt = datetime.datetime.strptime(row["time"], "%Y-%m-%d %H:%M:%S")
-        if dt < cutoff:
-            continue
-
-        # Threat filter
-        if threat >= 0:
-            try:
-                row_threat = int(row["threat"])
-            except (ValueError, KeyError):
-                continue
-            if row_threat != threat:
-                continue
-
-        # Area filter
-        if area_filter and area_filter not in row.get("cities", ""):
-            continue
-
-        # Deduplicate by alert id — one event counts once per area match
-        alert_id = row.get("id", "")
-        if alert_id in seen_ids:
-            continue
-        seen_ids.add(alert_id)
-
-        times.append(dt)
-
-    return sorted(times), seen_ids
-
-
-def load_api_alerts(
-    api_data: list[dict], area_filter: str, threat: int, start: str, seen_ids: set[str]
-) -> list[datetime.datetime]:
-    """Return alert times from API data not already in seen_ids."""
-    cutoff = datetime.datetime.strptime(start, "%Y-%m-%d")
-    times = []
-    for group in api_data:
-        gid = str(group["id"])
-        if gid in seen_ids:
-            continue
-        for alert in group.get("alerts", []):
-            dt = datetime.datetime.fromtimestamp(alert["time"])
-            if dt < cutoff:
-                continue
-            if threat >= 0 and alert.get("threat") != threat:
-                continue
-            cities = " ".join(alert.get("cities", []))
-            if area_filter and area_filter not in cities:
-                continue
-            # First matching alert in this group — record it
-            seen_ids.add(gid)
-            times.append(dt)
-            break
-    return times
-
-
-def load_city_translations(csv_path: str = "cities.csv") -> dict[str, str]:
-    """Return {hebrew: english} from cities.csv."""
-    path = pathlib.Path(csv_path)
-    if not path.exists():
-        return {}
-    with path.open(encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        return {row["hebrew"]: row["english"] for row in reader}
-
-
-def plot(
-    times: list[datetime.datetime],
-    area_label: str,
-    bin_hours: int,
-    output: str,
-    start_date: str = DEFAULT_START,
-    data_cutoff: datetime.datetime | None = None,
-    style: str = "dots",
-):
-    """One row per day, x = hour of day (0–24). Compact vertical layout."""
-    if not times:
-        print("No alerts found.")
-        return
-
-    start = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
-    end = max(times[-1].date(), datetime.date.today())
-    days = []
-    d = start
-    while d <= end:
-        days.append(d)
-        d += datetime.timedelta(days=1)
-
-    # Count per (date, hour-bin)
-    bins: dict[tuple, int] = {}
-    for t in times:
-        key = (t.date(), (t.hour // bin_hours) * bin_hours)
-        bins[key] = bins.get(key, 0) + 1
-
-    daily_totals = {
-        day: sum(bins.get((day, h), 0) for h in range(0, 24, bin_hours)) for day in days
-    }
-    daily_night = {
-        day: sum(
-            bins.get((day, h), 0) for h in range(0, 24, bin_hours) if h < 7 or h >= 21
-        )
-        for day in days
-    }
-
-    sns.set_theme(style="ticks", font_scale=1.0)
-    plt.rcParams["font.family"] = "serif"
-    plt.rcParams["font.serif"] = ["ETBembo", "Palatino", "Georgia", "DejaVu Serif"]
-
-    n_days = len(days)
-    fig, ax = plt.subplots(figsize=(8, max(3, n_days * 0.32 + 1.5)))
-    fig.patch.set_facecolor(BG_COLOR)
-    ax.set_facecolor(BG_COLOR)
-
-    NIGHT_COLOR = "#e2dfd5"
-    ax.axvspan(0, 7, color=NIGHT_COLOR, zorder=0, linewidth=0)
-    ax.axvspan(21, 24, color=NIGHT_COLOR, zorder=0, linewidth=0)
-
-    now = datetime.datetime.now()
-    cutoff_date = now.date()
-    cutoff_hour = now.hour + now.minute / 60
-
-    # Group raw times by date for lines mode
-    times_by_day: dict = {}
-    for t in times:
-        times_by_day.setdefault(t.date(), []).append(t)
-
-    for i, day in enumerate(days):
-        y = -i
-        line_end = cutoff_hour if day == cutoff_date else 24
-        ax.plot([0, line_end], [y, y], color="#cccccc", linewidth=0.4, zorder=1)
-        if style == "lines":
-            for t in times_by_day.get(day, []):
-                x = t.hour + t.minute / 60 + t.second / 3600
-                dot_color = (
-                    NIGHT_DOT_COLOR if (t.hour < 7 or t.hour >= 21) else DAY_DOT_COLOR
-                )
-                ax.plot(
-                    [x, x],
-                    [y - 0.12, y + 0.12],
-                    color=dot_color,
-                    linewidth=0.8,
-                    solid_capstyle="butt",
-                    zorder=3,
-                    clip_on=True,
-                )
-        else:
-            for h in range(0, 24, bin_hours):
-                count = bins.get((day, h), 0)
-                if count > 0:
-                    dot_color = NIGHT_DOT_COLOR if (h < 7 or h >= 21) else DAY_DOT_COLOR
-                    ax.scatter(
-                        [h + bin_hours / 2],
-                        [y],
-                        s=DOT_S * count,
-                        color=dot_color,
-                        zorder=3,
-                        clip_on=False,
-                    )
-
-    # ── Daily total dots ─────────────────────────────────────────────────
-    x_end = 26.5
-    ax.set_xlim(0, x_end)
-    ax.set_ylim(-n_days + 0.5, 0.5)
-    ax.set_yticks(range(0, -n_days, -1))
-    ax.set_yticklabels(
-        [d.strftime("%a %-d %b") for d in days], fontsize=8, color="#555555"
-    )
-    ax.tick_params(axis="y", length=0)
-    ax.set_xticks(range(0, 25, 3))
-    ax.set_xticklabels(
-        [f"{h:02d}:00" for h in range(0, 25, 3)], fontsize=8, color="#555555"
-    )
-    ax.tick_params(axis="x", colors="#555555", labelsize=9)
-    sns.despine(ax=ax, left=True, right=True, top=True, bottom=False, offset=6)
-
-    grey = "#888888"
-    DOT_X = 25.5
-    ax.text(DOT_X, 0.55, "total", fontsize=7, color=grey, va="bottom", ha="center")
-    for i, day in enumerate(days):
-        tot = daily_totals[day]
-        if tot:
-            night = daily_night[day]
-            night_frac = night / tot
-            s = DOT_S * tot
-            if night_frac <= 0:
-                ax.scatter(
-                    [DOT_X], [-i], s=s, color=DAY_DOT_COLOR, zorder=3, clip_on=False
-                )
-            elif night_frac >= 1:
-                ax.scatter(
-                    [DOT_X], [-i], s=s, color=NIGHT_DOT_COLOR, zorder=3, clip_on=False
-                )
-            else:
-                ax.scatter(
-                    [DOT_X],
-                    [-i],
-                    s=s,
-                    marker=_make_wedge_marker(0, night_frac),
-                    color=NIGHT_DOT_COLOR,
-                    zorder=3,
-                    clip_on=False,
-                )
-                ax.scatter(
-                    [DOT_X],
-                    [-i],
-                    s=s,
-                    marker=_make_wedge_marker(night_frac, 1.0),
-                    color=DAY_DOT_COLOR,
-                    zorder=3,
-                    clip_on=False,
-                )
-            ax.text(
-                DOT_X,
-                -i,
-                str(tot),
-                fontsize=6,
-                color="white",
-                va="center",
-                ha="center",
-                zorder=4,
-            )
-
-    date_range = f"{times[0].strftime('%b %d')} – {times[-1].strftime('%b %d, %Y')}"
-    ax.set_title(
-        f"Rocket alert frequency — {area_label}",
-        loc="left",
-        fontsize=13,
-        fontweight="bold",
-        pad=26,
-    )
-    ax.text(
-        0,
-        1.04,
-        f"{date_range}   ({len(times)} alerts)",
-        transform=ax.transAxes,
-        fontsize=9,
-        color=grey,
-        va="bottom",
-    )
-
-    # ── Legend ───────────────────────────────────────────────────────────
-    leg_x = 24 / x_end
-    leg_y = 1.065
-    if style == "dots":
-        leg_label = f"alerts per {bin_hours}h:"
-        for c, lbl in [(5, "5"), (1, "1")]:
-            ax.text(
-                leg_x,
-                leg_y,
-                lbl,
-                transform=ax.transAxes,
-                fontsize=9,
-                color=grey,
-                va="center",
-                ha="right",
-            )
-            leg_x -= 0.022
-            ax.scatter(
-                [leg_x],
-                [leg_y],
-                s=DOT_S * c,
-                color=NIGHT_DOT_COLOR,
-                transform=ax.transAxes,
-                clip_on=False,
-                zorder=4,
-            )
-            leg_x -= 0.03
-        ax.text(
-            leg_x,
-            leg_y,
-            leg_label,
-            transform=ax.transAxes,
-            fontsize=9,
-            color=grey,
-            va="center",
-            ha="right",
-        )
-        lx = leg_x - 0.18
-    else:
-        # In lines mode: night/day key sits at the right end
-        lx = leg_x
-    ax.scatter(
-        [lx],
-        [leg_y],
-        s=DOT_S * 2,
-        marker=_make_wedge_marker(0.5, 1.0),
-        color=NIGHT_DOT_COLOR,
-        transform=ax.transAxes,
-        clip_on=False,
-        zorder=4,
-    )
-    ax.scatter(
-        [lx],
-        [leg_y],
-        s=DOT_S * 2,
-        marker=_make_wedge_marker(0, 0.5),
-        color=DAY_DOT_COLOR,
-        transform=ax.transAxes,
-        clip_on=False,
-        zorder=4,
-    )
-    ax.text(
-        lx - 0.012,
-        leg_y,
-        "night/day:",
-        fontsize=9,
-        color=grey,
-        va="center",
-        ha="right",
-        transform=ax.transAxes,
-    )
-
-    plt.tight_layout()
-    plt.savefig(output, dpi=150, bbox_inches="tight")
-    print(f"Saved: {output}")
-    plt.show()
-
-
 if __name__ == "__main__":
     args = parse_args()
     if args.label is None:
-        translations = load_city_translations()
-        args.label = translations.get(args.area, args.area or "All Areas")
+        args.label = CITY_TRANSLATIONS.get(args.area, args.area or "All Areas")
+
     csv_text, data_cutoff = fetch_csv()
     times, seen_ids = load_alerts(csv_text, args.area, args.threat, args.start)
     try:
@@ -522,12 +176,19 @@ if __name__ == "__main__":
         print(f"  +{len(api_times)} alerts from tzevaadom API.")
     times = sorted(times + api_times)
     print(f"Matched {len(times)} alerts for '{args.label}' (since {args.start}).")
-    plot(
-        times,
-        args.label,
-        args.bin_hours,
-        args.output,
-        args.start,
-        data_cutoff,
-        args.style,
+
+    img_bytes = render_chart(
+        times, args.label, args.bin_hours, args.start, data_cutoff, args.style
     )
+    pathlib.Path(args.output).write_bytes(img_bytes)
+    print(f"Saved: {args.output}")
+
+    # Display the chart
+    import io
+    import matplotlib.pyplot as plt
+    import matplotlib.image as mpimg
+    fig, ax = plt.subplots()
+    ax.imshow(mpimg.imread(io.BytesIO(img_bytes)))
+    ax.axis("off")
+    plt.tight_layout()
+    plt.show()

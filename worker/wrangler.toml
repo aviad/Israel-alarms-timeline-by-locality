@@ -1,0 +1,8 @@
+name = "alarms-graph"
+main = "entry.py"
+compatibility_date = "2026-03-08"
+compatibility_flags = ["python_workers"]
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "bacce09fc96f4951a5447b13c8433cb5"

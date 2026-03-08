@@ -2,280 +2,53 @@
 #+subtitle: Running alarms_graph.py on Cloudflare Python Workers
 #+date: <2026-03-08 Sun>
 
-* Approach: Cloudflare Python Workers + Dual Runner
+* Status: Deployed but broken — matplotlib CPU limit exceeded
 
-Cloudflare Python Workers run on Pyodide (CPython compiled to WASM).
-Pyodide ships with *matplotlib* and *numpy* pre-built, so the
-existing chart code can run with minimal changes.
+The worker is live at https://alarms-graph.unite-worlds.workers.dev
+The landing page (=GET /=) works. Chart requests (=GET /chart.png=) fail
+with Cloudflare error 1102 (CPU time limit exceeded).
 
-The key insight: extract shared logic into =alarms_core.py= so both
-the local CLI and the Cloudflare Worker can use it. The local script
-stays unchanged in behavior.
+The root cause: matplotlib rendering in Pyodide WASM is too slow even
+for the paid plan's 30-second CPU limit. The architecture must change.
 
-* Architecture
+* What Was Built (Completed)
 
-#+begin_src
-alarms_core.py       ← pure logic: CSV parsing, filtering, chart rendering
-                        no I/O, no CLI, no caching — just functions
-                        render_chart() returns bytes (PNG/SVG via BytesIO)
+** =alarms_core.py= — pure shared logic [DONE]
+- =load_alerts(csv_text, area_filter, threat, start)= → =(times, seen_ids)=
+- =load_api_alerts(api_data, area_filter, threat, start, seen_ids)= → =times=
+- =render_chart(times, label, bin_hours, start_date, data_cutoff, style, fmt)= → =bytes=
+  - Returns PNG or SVG bytes via BytesIO
+  - Uses matplotlib + seaborn (with graceful fallback for no-seaborn)
+  - No I/O, no plt.show(), no side effects
+- =CITY_TRANSLATIONS= dict — 1627 Hebrew→English city name entries,
+  inlined from =cities.csv=, no filesystem access needed
+- Constants: =DEFAULT_AREA_FILTER=, =DEFAULT_BIN_HOURS=, =DEFAULT_START=,
+  =ALARMS_CSV_URL=, =TZEVAADOM_API_URL=, all color/layout constants
+- =ISRAEL_TZ= removed (only needed by CLI, would cause ZoneInfo/tzdata
+  error in Pyodide — moved to =alarms_graph.py=)
+- seaborn is optional: =HAS_SEABORN= guard, matplotlib fallback for
+  =set_theme= and =despine=
 
-alarms_graph.py      ← local CLI runner (unchanged behavior)
-                        argparse, requests, file cache, plt.show()
-                        imports alarms_core for parsing + rendering
+** =alarms_graph.py= — thin CLI wrapper [DONE]
+- Imports all logic from =alarms_core=
+- Owns: =argparse=, =requests=, file-based cache, =plt.show()=, =ISRAEL_TZ=
+- Behavior identical to original
 
-worker/
-├── entry.py          ← Cloudflare Worker entry point
-│                       query params, js.fetch, KV cache
-│                       imports alarms_core for parsing + rendering
-├── wrangler.toml
-└── requirements.txt
-#+end_src
+** =worker/= — Cloudflare Worker project [DONE, CPU-limited]
 
-** What lives where
+*** =worker/entry.py=
+- Uses =WorkerEntrypoint= class pattern (=from workers import WorkerEntrypoint, Response=)
+- =class Default(WorkerEntrypoint)= with =async def fetch(self, request)=
+- =self.env.CACHE= for KV access
+- =from js import fetch as js_fetch= for outbound HTTP
+- =from urllib.parse import urlparse, parse_qs= for URL parsing
+- Landing page: HTML form with area dropdown, date picker, style radio
+- Chart endpoint: =/chart.png= and =/chart.svg=
+- KV caching: CSV at 30-minute TTL, API data at 2-minute TTL
+- Error handling: ValueError → 400, Exception → 500
 
-| Concern              | alarms_core.py | alarms_graph.py | worker/entry.py |
-|----------------------+----------------+-----------------+-----------------|
-| CSV parsing          | ✓              |                 |                 |
-| Alert filtering      | ✓              |                 |                 |
-| Deduplication        | ✓              |                 |                 |
-| Chart rendering      | ✓              |                 |                 |
-| City translations    | ✓              |                 |                 |
-| =argparse= CLI       |                | ✓               |                 |
-| =requests.get()=     |                | ✓               |                 |
-| File-based cache     |                | ✓               |                 |
-| =plt.show()=         |                | ✓               |                 |
-| Save to file         |                | ✓               |                 |
-| URL query params     |                |                 | ✓               |
-| =js.fetch()=         |                |                 | ✓               |
-| KV cache             |                |                 | ✓               |
-| HTTP Response        |                |                 | ✓               |
-| Landing page HTML    |                |                 | ✓               |
-
-* What Changes vs What Stays
-
-** Stays the same
-- =alarms_graph.py= CLI behavior: same args, same output, same caching
-- All chart rendering logic (matplotlib, seaborn, colors, layout)
-- CSV parsing, filtering, deduplication
-
-** Changes
-| Current                  | Cloudflare equivalent              |
-|--------------------------+------------------------------------|
-| =requests.get()=         | =fetch()= via Pyodide's =js= module |
-| File-based cache         | Cloudflare KV with TTL             |
-| =argparse= CLI args      | URL query parameters               |
-| =plt.savefig(file)=      | =plt.savefig(BytesIO)= → Response  |
-| =plt.show()=             | removed (worker only)              |
-| =cities.csv= local file  | Bundled as Python dict             |
-| Local font (ET-Book)     | Fall back to web-safe serif        |
-
-* Implementation Plan
-
-** Step 1: Extract =alarms_core.py=
-
-Move pure logic out of =alarms_graph.py=:
-
-#+begin_src python
-# alarms_core.py — no I/O, no CLI, no side effects at module level
-
-import csv
-import datetime
-import io
-import math
-from zoneinfo import ZoneInfo
-
-import matplotlib.font_manager as fm
-from matplotlib.path import Path
-import matplotlib.pyplot as plt
-
-# Try seaborn, but don't require it (not available in Pyodide)
-try:
-    import seaborn as sns
-    HAS_SEABORN = True
-except ImportError:
-    HAS_SEABORN = False
-
-ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
-
-# Constants (colors, sizes, defaults)
-DEFAULT_AREA_FILTER = "תל אביב - מרכז העיר"
-DEFAULT_BIN_HOURS = 1
-DEFAULT_START = "2026-02-28"
-BG_COLOR = "#f0ede3"
-# ... etc ...
-
-# City translations bundled as dict (no filesystem dependency)
-CITY_TRANSLATIONS = {
-    "תל אביב - מרכז העיר": "Tel Aviv - City Center",
-    "אשקלון": "Ashkelon",
-    # ... generated from cities.csv ...
-}
-
-def load_alerts(csv_text, area_filter, threat, start):
-    """Parse CSV text, return (sorted times, seen_ids). Unchanged logic."""
-    ...
-
-def load_api_alerts(api_data, area_filter, threat, start, seen_ids):
-    """Filter API data, return new times. Unchanged logic."""
-    ...
-
-def render_chart(times, area_label, bin_hours, start_date,
-                 data_cutoff=None, style="lines", fmt="png") -> bytes:
-    """Generate chart, return image bytes (PNG or SVG).
-
-    This is the existing plot() function but:
-    - saves to BytesIO instead of a file
-    - does not call plt.show()
-    - returns bytes
-    """
-    # ... existing plot() code ...
-    buf = io.BytesIO()
-    plt.savefig(buf, format=fmt, dpi=150, bbox_inches="tight")
-    plt.close()
-    buf.seek(0)
-    return buf.read()
-#+end_src
-
-** Step 2: Refactor =alarms_graph.py= to use =alarms_core=
-
-=alarms_graph.py= becomes a thin CLI wrapper:
-
-#+begin_src python
-# alarms_graph.py — local CLI runner, behavior unchanged
-import argparse
-import pathlib
-import requests
-import matplotlib.pyplot as plt
-import io
-
-from alarms_core import (
-    load_alerts, load_api_alerts, render_chart,
-    CITY_TRANSLATIONS, DEFAULT_AREA_FILTER, DEFAULT_BIN_HOURS, DEFAULT_START,
-)
-
-ALARMS_CSV_URL = "https://raw.githubusercontent.com/..."
-CACHE_FILE = pathlib.Path("alarms_cache.csv")
-# ... same caching constants ...
-
-def parse_args(): ...        # unchanged
-def fetch_csv(): ...         # unchanged, uses requests + file cache
-def fetch_api_data(): ...    # unchanged, uses requests + file cache
-
-if __name__ == "__main__":
-    args = parse_args()
-    if args.label is None:
-        args.label = CITY_TRANSLATIONS.get(args.area, args.area or "All Areas")
-
-    csv_text, data_cutoff = fetch_csv()
-    times, seen_ids = load_alerts(csv_text, args.area, args.threat, args.start)
-
-    api_data = fetch_api_data()
-    api_times = load_api_alerts(api_data, args.area, args.threat, args.start, seen_ids)
-    times = sorted(times + api_times)
-
-    # Render and save
-    img_bytes = render_chart(times, args.label, args.bin_hours, args.start,
-                             data_cutoff, args.style)
-    pathlib.Path(args.output).write_bytes(img_bytes)
-    print(f"Saved: {args.output}")
-
-    # Also display
-    plt.figure()
-    plt.imshow(plt.imread(io.BytesIO(img_bytes)))
-    plt.axis("off")
-    plt.show()
-#+end_src
-
-Alternatively, =alarms_graph.py= can call =render_chart()= and also
-call =plt.show()= on the same figure — just need to restructure
-=plot()= so it optionally keeps the figure open.
-
-A simpler approach: have =render_chart()= accept an optional
-=show=False= parameter.
-
-** Step 3: Worker entry point
-
-#+begin_src python
-# worker/entry.py
-from js import Response, Headers, URL, fetch as js_fetch
-from pyodide.ffi import to_js
-import json
-
-from alarms_core import (
-    load_alerts, load_api_alerts, render_chart,
-    CITY_TRANSLATIONS, DEFAULT_AREA_FILTER, DEFAULT_BIN_HOURS, DEFAULT_START,
-    ALARMS_CSV_URL, TZEVAADOM_API_URL,
-)
-
-async def fetch_csv(env):
-    cached = await env.CACHE.get("csv:alarms")
-    if cached:
-        meta = await env.CACHE.get("csv:meta")
-        return cached, meta or ""
-
-    resp = await js_fetch(ALARMS_CSV_URL)
-    text = await resp.text()
-    last_mod = resp.headers.get("Last-Modified") or ""
-
-    await env.CACHE.put("csv:alarms", text,
-                        to_js({"expirationTtl": 30 * 60}))
-    await env.CACHE.put("csv:meta", last_mod,
-                        to_js({"expirationTtl": 30 * 60}))
-    return text, last_mod
-
-async def fetch_api_data(env):
-    cached = await env.CACHE.get("api:alerts")
-    if cached:
-        return json.loads(cached)
-
-    resp = await js_fetch(TZEVAADOM_API_URL)
-    text = await resp.text()
-    await env.CACHE.put("api:alerts", text,
-                        to_js({"expirationTtl": 2 * 60}))
-    return json.loads(text)
-
-async def on_fetch(request, env):
-    url = URL.new(request.url)
-    path = url.pathname
-
-    if path == "/" or path == "":
-        return serve_landing_page()
-
-    params = url.searchParams
-    area = params.get("area") or DEFAULT_AREA_FILTER
-    label = params.get("label") or CITY_TRANSLATIONS.get(area, area or "All Areas")
-    start = params.get("start") or DEFAULT_START
-    style = params.get("style") or "lines"
-    threat = int(params.get("threat") or "0")
-    bin_hours = int(params.get("bin_hours") or "1")
-    fmt = "svg" if path.endswith(".svg") else "png"
-
-    csv_text, data_cutoff = await fetch_csv(env)
-    times, seen_ids = load_alerts(csv_text, area, threat, start)
-
-    api_data = await fetch_api_data(env)
-    api_times = load_api_alerts(api_data, area, threat, start, seen_ids)
-    times = sorted(times + api_times)
-
-    img_bytes = render_chart(times, label, bin_hours, start,
-                             data_cutoff, style, fmt)
-
-    content_type = "image/svg+xml" if fmt == "svg" else "image/png"
-    headers = Headers.new(to_js({
-        "Content-Type": content_type,
-        "Cache-Control": "public, max-age=120",
-    }))
-    return Response.new(to_js(img_bytes), headers=headers)
-
-def serve_landing_page():
-    # Minimal HTML with form + <img> tag
-    ...
-#+end_src
-
-** Step 4: Project configuration
-
+*** =worker/wrangler.toml=
 #+begin_src toml
-# worker/wrangler.toml
 name = "alarms-graph"
 main = "entry.py"
 compatibility_date = "2026-03-08"
@@ -283,151 +56,372 @@ compatibility_flags = ["python_workers"]
 
 [[kv_namespaces]]
 binding = "CACHE"
-id = "<create-via-wrangler>"
+id = "bacce09fc96f4951a5447b13c8433cb5"
 #+end_src
 
-#+begin_src
-# worker/requirements.txt
-matplotlib
+*** =worker/python_modules/= — Pyodide-compatible vendored packages
+Built by =pywrangler sync= using Pyodide wheels (WASM .so files):
+- matplotlib 3.8.4 (Pyodide build)
+- numpy 2.2.5 (Pyodide build)
+- contourpy, cycler, fonttools, kiwisolver, python-dateutil, six, pyparsing, packaging
+- PIL: replaced with minimal stubs (=PIL/__init__.py=, =PIL/Image.py=,
+  =PIL/PngImagePlugin.py=, =PIL/ImageTk.py=) — matplotlib imports PIL
+  at module level but only uses it for colormap notebook repr,
+  not for our rendering path
+- Non-DejaVu fonts stripped from =matplotlib/mpl-data/fonts/= — saves ~3 MB
+- =_virtualenv.py=, =_virtualenv.pth=, =pyvenv.cfg=, =.synced= removed
+
+*** =worker/alarms_core.py= — symlink to =../alarms_core.py=
+
+*** =worker/pyproject.toml=
+#+begin_src toml
+[project]
+name = "alarms-graph"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["matplotlib"]
+
+[dependency-groups]
+dev = ["pywrangler"]
 #+end_src
 
-** Step 5: Generate =cities.py= / bundle translations
+* What Was Learned: Cloudflare Python Workers Reality (March 2026)
 
-One-time script to convert =cities.csv= → Python dict:
+** Handler API: two incompatible modes
 
-#+begin_src sh
-python -c "
-import csv
-with open('cities.csv', encoding='utf-8') as f:
-    rows = list(csv.DictReader(f))
-print('CITY_TRANSLATIONS = {')
-for r in rows:
-    he = r['hebrew'].replace(\"'\", \"\\\\'\" )
-    en = r['english'].replace(\"'\", \"\\\\'\" )
-    print(f\"    '{he}': '{en}',\")
-print('}')
-" > alarms_core_cities.py
-#+end_src
+There are two distinct Python Worker APIs. They are incompatible and have
+different size limits:
 
-Or just inline the dict in =alarms_core.py=.
+| Mode         | Handler              | Size limit (gzip) | Packages            |
+|--------------+----------------------+-------------------+---------------------|
+| Old          | =on_fetch(req, env)= | 64 MiB upload     | none (broken)       |
+| New (active) | =WorkerEntrypoint=   | 3 MiB free        | vendored via pywrangler |
+|              | class + =fetch=      | 10 MiB paid       |                     |
 
-** Step 6: Handle seaborn absence in Pyodide
+The old =on_fetch= handler is fully deprecated as of wrangler 4.71.0.
+Even with =compatibility_flags = ["python_workers"]=, the runtime no
+longer registers =on_fetch= as a handler. Only =WorkerEntrypoint= works.
 
-seaborn is only used for two calls:
-- =sns.set_theme(style="ticks", font_scale=1.0)=
-- =sns.despine(...)=
+*** Key symptom
+Importing =from workers import WorkerEntrypoint= switches wrangler into
+the new mode with the 3/10 MiB gzip limit. Without that import, the old
+mode is used (higher size limit) but the handler is never found.
 
-Replace with matplotlib equivalents behind =HAS_SEABORN= guard:
+** Package management: pywrangler, not wrangler
+
+The new Python Workers use =pywrangler= (=uv run --with pywrangler pywrangler=):
+- =pywrangler sync= installs packages from =pyproject.toml= dependencies
+  into =python_modules/= using Pyodide-compatible wheels (WASM .so binaries)
+- =pywrangler deploy= runs sync then proxies to wrangler
+- =requirements.txt= and =cf-requirements.txt= are both rejected by wrangler
+- The =workers= module (=WorkerEntrypoint=, =Response=, etc.) is a Cloudflare
+  built-in, not installable via pip
+
+*** python_modules/ artifacts to remove before deploy
+=pywrangler sync= creates several artifacts that pollute the bundle:
+- =.venv/= — local desktop Python venv (~200 MB), wrangler picks up all
+  its .py files. Must be deleted before deploy.
+- =.venv-workers/= — Pyodide dev venv (~167 MB), same problem.
+- =python_modules/_virtualenv.py=, =python_modules/_virtualenv.pth= —
+  virtualenv hook files; remove them (cause issues in Pyodide runtime)
+- =python_modules/pyvenv.cfg=, =python_modules/.synced= — marker files;
+  remove them
+
+=.wranglerignore= does NOT reliably exclude these directories.
+Delete them manually before deploying.
+
+** Size limits
+
+| Resource             | Free plan | Paid ($5/mo) |
+|----------------------+-----------+--------------|
+| Worker gzip size     | 3 MiB     | 10 MiB       |
+| Worker uncompressed  | 64 MiB    | 64 MiB       |
+| CPU per request      | 10 ms     | 30 s         |
+| Memory               | 128 MB    | 128 MB       |
+| Requests             | 100K/day  | 10M/month    |
+| KV reads             | 100K/day  | 10M/month    |
+| KV writes            | 1K/day    | 1M/month     |
+
+Our bundle (matplotlib + numpy + PIL stubs + stripped fonts):
+- ~44 MB uncompressed, ~13 MB gzip → fits paid plan (10 MiB? — actually
+  wrangler reported 13 MB gzip but still deployed successfully on paid plan)
+
+** CPU time: the fatal blocker
+
+matplotlib in Pyodide WASM far exceeds the 30-second CPU limit.
+The landing page (no rendering) works. The chart endpoint (matplotlib
+rendering) hits error 1102 every time.
+
+This is fundamental: Python WASM execution is ~10-50x slower than native.
+A chart that renders in 1 second locally takes 30+ CPU-seconds in Pyodide.
+
+Even pre-warming the worker (cron trigger) would not help because the
+CPU limit applies per-request, not per cold-start.
+
+** ZoneInfo / tzdata
+
+=zoneinfo= requires the =tzdata= package in Pyodide
+(=pyodide.loadPackage('tzdata')=). Without it:
+  =ZoneInfoNotFoundError: No time zone found with key Asia/Jerusalem=
+Fix: moved =ISRAEL_TZ = ZoneInfo(...)= out of =alarms_core.py= (which
+the worker imports) into =alarms_graph.py= (CLI only). The worker does
+not need timezone-aware datetimes.
+
+** seaborn
+
+Not available in Pyodide. =try/except ImportError= guard works fine.
+Fallback: set spines manually with matplotlib.
+
+** PIL / Pillow
+
+matplotlib 3.8 imports PIL unconditionally at module level in:
+- =matplotlib/colors.py=: =from PIL import Image= and =PngImagePlugin.PngInfo=
+- =matplotlib/image.py=, =backends/backend_*.py=, =animation.py= etc.
+
+PIL is only USED in =colors.py= for =Colormap._repr_png_()= (Jupyter
+notebook colormap preview). Our rendering path never triggers this.
+
+Solution: stub PIL with 4 minimal Python files (~20 lines total).
+This avoids bundling PIL's WASM binary (~3 MB gzip).
+
+** KV namespace
+
+Created: =bacce09fc96f4951a5447b13c8433cb5= (binding name =CACHE=).
+Account: =7d92b3dd730bfad540919765fdf2c54e=.
+Subdomain: =unite-worlds.workers.dev=.
+
+* The Fix: Replace matplotlib with Pure SVG Rendering
+
+matplotlib in WASM is fundamentally too slow. The correct solution is
+to generate SVG directly from Python — no C extensions, no WASM, no
+Pyodide overhead.
+
+** Why this works
+
+The chart layout is fixed and predictable:
+- Fixed coordinate system: x = hour (0–24), y = one row per day
+- Night shading: two rectangles (x=0–7 and x=21–24)
+- Alert marks: vertical lines at exact time positions (lines style) or
+  circles scaled by count (dots style)
+- Y-axis labels: date strings positioned at fixed row centers
+- X-axis labels: hour labels at 0, 3, 6, ... 24
+- Total count circles on the right: split pie chart using SVG arcs
+- Title and subtitle: positioned text elements
+
+All of this is standard SVG. Python can generate it as a string.
+No numpy required (basic arithmetic only).
+No matplotlib required.
+No PIL required.
+
+** What changes
+
+=alarms_core.py= currently:
+- Imports =matplotlib.font_manager=, =matplotlib.path.Path=,
+  =matplotlib.pyplot= at module level
+- =render_chart()= uses matplotlib/seaborn throughout
+
+New =alarms_core.py=:
+- No matplotlib import at all
+- =render_chart()= returns SVG bytes built from f-strings/string concat
+- =fmt= parameter: only "svg" makes sense; PNG support dropped for worker
+  (local CLI can still use matplotlib directly in =alarms_graph.py=)
+
+=alarms_graph.py= keeps its own matplotlib import and =plot()= function
+for local display. It calls =render_chart()= from =alarms_core= for file
+output, OR we split:
+- =alarms_core.render_chart()= → SVG bytes (worker-safe)
+- =alarms_graph.py= keeps a local =render_png()= using matplotlib for
+  the =--output .png= case, and calls =render_chart()= for SVG
+
+** worker/ after SVG switch
+
+The =python_modules/= directory becomes unnecessary entirely.
+Worker bundle drops from ~13 MB gzip to ~75 KB (just =entry.py= +
+=alarms_core.py=).
+
+No need for =pywrangler= or =pyproject.toml=.
+Works on *free plan* (no matplotlib = no CPU issue).
+
+** SVG rendering plan
 
 #+begin_src python
-if HAS_SEABORN:
-    sns.set_theme(style="ticks", font_scale=1.0)
-    sns.despine(ax=ax, left=True, right=True, top=True, bottom=False, offset=6)
-else:
-    plt.rcParams.update({"axes.edgecolor": "#cccccc", "axes.linewidth": 0.6})
-    for spine in ["left", "right", "top"]:
-        ax.spines[spine].set_visible(False)
-    ax.spines["bottom"].set_position(("outward", 6))
+def render_chart(times, area_label, bin_hours, start_date,
+                 data_cutoff=None, style="lines", fmt="svg") -> bytes:
+    """Return SVG bytes. Pure Python, no dependencies."""
+    # Layout constants
+    ROW_H = 18          # px per day row
+    LEFT_MARGIN = 58    # px for date labels
+    RIGHT_PAD = 50      # px for total-count circles
+    HOUR_W = 28         # px per hour
+    CHART_W = HOUR_W * 24  # 672 px
+    SVG_W = LEFT_MARGIN + CHART_W + RIGHT_PAD
+
+    # Build day list from start_date to today
+    # For each day: draw baseline, shade nights, draw alert marks
+    # Wedge pie for night/day split: SVG arc path
+
+    buf = []
+    buf.append(f'<svg xmlns="http://www.w3.org/2000/svg" '
+               f'width="{SVG_W}" height="{total_h}">')
+    # ... build SVG elements ...
+    buf.append('</svg>')
+    return ''.join(buf).encode('utf-8')
 #+end_src
 
-** Step 7: Landing page
+*** SVG wedge (pie arc) for night/day total dot
 
-Minimal HTML served at =GET /=:
-- Area dropdown populated from =CITY_TRANSLATIONS=
-- Start date picker (default: 2026-02-28)
-- Style radio: dots / lines
-- Submit renders =<img src="/chart.png?area=...&start=...&style=...">=
+The existing matplotlib code uses a custom =_make_wedge_marker()= with
+a =Path=. In SVG this becomes a standard arc path:
 
-** Step 8: Test locally
+#+begin_src python
+def _svg_wedge(cx, cy, r, start_frac, end_frac, color):
+    """SVG arc path for a pie wedge, fractions 0–1 clockwise from top."""
+    import math
+    t0 = math.pi / 2 - start_frac * 2 * math.pi  # start angle
+    t1 = math.pi / 2 - end_frac * 2 * math.pi    # end angle
+    x0, y0 = cx + r * math.cos(t0), cy - r * math.sin(t0)
+    x1, y1 = cx + r * math.cos(t1), cy - r * math.sin(t1)
+    large = 1 if (end_frac - start_frac) > 0.5 else 0
+    return (f'<path d="M {cx},{cy} L {x0:.1f},{y0:.1f} '
+            f'A {r},{r} 0 {large},1 {x1:.1f},{y1:.1f} Z" '
+            f'fill="{color}"/>')
+#+end_src
+
+** Local CLI after SVG switch
+
+Options for =alarms_graph.py=:
+1. Keep using matplotlib's =render_chart()= locally by keeping a copy
+   of the old plot() function in =alarms_graph.py= itself. Call
+   =alarms_core.render_chart()= for file output.
+2. Or: =alarms_graph.py= imports =render_chart= from =alarms_core=
+   (gets SVG), writes to file, then uses =subprocess= or
+   =webbrowser.open()= to display. Simpler, SVG viewers are everywhere.
+3. Or: keep =alarms_core.render_chart()= returning SVG but add a
+   separate =alarms_core.render_chart_png()= that uses matplotlib,
+   and have =alarms_graph.py= call that for display.
+
+Recommended: option 2 is cleanest. The CLI outputs SVG by default.
+=plt.show()= is replaced by writing SVG to a temp file and opening it.
+
+* Remaining Work
+
+** Step 1: Rewrite =render_chart()= as pure SVG [TODO]
+
+In =alarms_core.py=:
+- Remove all matplotlib imports
+- Implement SVG layout with the same visual design:
+  - Background color =#f0ede3=
+  - Night shading =#e2dfd5= for hours 0–7 and 21–24
+  - Per-day baseline lines in =#cccccc=
+  - Alert marks: dark =#333333= for night hours, =#888888= for day
+    - Lines mode: =<line>= elements, height ~24% of row
+    - Dots mode: =<circle>= elements, radius scaled by count
+  - Day labels: left-aligned, serif font, small gray text
+  - Hour labels: 0:00, 3:00, ... 24:00
+  - Total count column: wedge circles + count text
+  - Title and date range / alert count subtitle
+  - Legend: night/day wedge key; dots-mode: size key
+
+** Step 2: Update =alarms_graph.py= for SVG output [TODO]
+
+- Remove matplotlib from the import chain (or keep it only for
+  the interactive =plt.show()= display path)
+- =render_chart()= from =alarms_core= now returns SVG bytes
+- Write SVG to file (=--output alarms_frequency.svg=)
+- For display: open with =webbrowser.open()= or pipe to an SVG viewer
+
+** Step 3: Strip =worker/python_modules/= [TODO]
+
+- Delete =worker/python_modules/= entirely
+- Delete =worker/pyproject.toml=, =worker/uv.lock=
+- The worker needs zero vendored packages
+
+** Step 4: Clean up =worker/wrangler.toml= [TODO]
+
+Remove =compatibility_flags = ["python_workers"]= if it is no longer
+needed without matplotlib. Or keep it — it does not hurt.
+
+** Step 5: Update =worker/entry.py= for SVG-only output [TODO]
+
+- Remove =from pyodide.ffi import to_js= (no longer needed)
+- =render_chart()= returns SVG string bytes directly — no binary wrapping
+- Content-Type: =image/svg+xml= always
+- =/chart.svg= and =/chart.png= can both serve SVG (or redirect .png
+  to .svg — browsers handle SVG fine in =<img>= tags)
+
+** Step 6: Test and redeploy [TODO]
 
 #+begin_src sh
-# Local CLI — should work exactly as before
+# Local CLI test
 uv run alarms_graph.py --area "אשקלון" --label "Ashkelon"
 
-# Worker locally
+# Worker local dev
 cd worker && npx wrangler dev
-# then visit http://localhost:8787/chart.png?area=אשקלון
-#+end_src
 
-** Step 9: Deploy
-
-#+begin_src sh
-cd worker
-npx wrangler kv namespace create CACHE
-# update wrangler.toml with the returned namespace id
+# Deploy (free plan should work now)
 npx wrangler deploy
 #+end_src
 
-* Risks and Mitigations
-
-** 1. Cold start latency (3–10s)
-Loading matplotlib WASM on first request is slow.
-- Acceptable for this use case (not latency-critical)
-- Cloudflare keeps workers warm between requests
-- Can add a cron trigger (=scheduled= handler) to keep warm
-
-** 2. CPU time limits
-Free tier: 10ms CPU — *not enough* for matplotlib.
-Paid ($5/mo): 30s CPU — fine.
-- Start with paid plan, or consider pure SVG string builder later
-  to drop back to free tier
-
-** 3. Memory limits (128 MB)
-matplotlib + 4MB CSV could be tight.
-- Parse CSV line-by-line, pre-filter by date string prefix
-- Cache parsed results in KV keyed by =(area, threat, start)=
-
-** 4. seaborn not in Pyodide
-- Addressed in Step 6: graceful fallback to matplotlib equivalents
-- Visual output is nearly identical
-
-** 5. No ET-Book font
-- Falls back to Georgia / Palatino / DejaVu Serif
-- Acceptable visual difference
-
-** 6. ZoneInfo in Pyodide
-- =zoneinfo= should work since Pyodide includes tzdata
-- If not: hardcode Israel DST rules (simple)
-
-* File Structure (Final)
+* Current File Structure
 
 #+begin_src
-alarms_core.py           ← shared: parsing, filtering, chart rendering
-alarms_graph.py          ← local CLI runner (unchanged behavior)
-cities.csv               ← source of truth for translations
+alarms_core.py        ← DONE: shared logic, matplotlib-based render_chart()
+                         TODO: rewrite render_chart() as pure SVG
+alarms_graph.py       ← DONE: thin CLI wrapper
+cities.csv            ← source of truth (translations inlined in alarms_core.py)
 
 worker/
-├── wrangler.toml        ← Cloudflare config + KV binding
-├── requirements.txt     ← matplotlib
-├── entry.py             ← on_fetch: query params, js.fetch, KV, Response
-└── (symlink or copy of alarms_core.py)
+├── entry.py          ← DONE: WorkerEntrypoint class, KV caching, landing page
+├── wrangler.toml     ← DONE: name, KV binding, python_workers flag
+├── pyproject.toml    ← TODO: delete after removing matplotlib dependency
+├── uv.lock           ← TODO: delete
+├── alarms_core.py    → symlink to ../alarms_core.py
+├── python_modules/   ← TODO: delete entirely (matplotlib vendored, not needed)
+├── .venv-workers/    ← TODO: delete (recreated by pywrangler sync, must not deploy)
+└── .wranglerignore   ← TODO: keep or delete (did not reliably exclude .venv dirs)
 #+end_src
 
-Note: Cloudflare Python Workers bundle all =.py= files in the worker
-directory. Either symlink =alarms_core.py= into =worker/= or copy it
-as part of a build step.
+* Cloudflare Account Details
 
-* Costs
+| Item              | Value                                        |
+|-------------------+----------------------------------------------|
+| Account ID        | =7d92b3dd730bfad540919765fdf2c54e=           |
+| Worker name       | =alarms-graph=                               |
+| Live URL          | https://alarms-graph.unite-worlds.workers.dev |
+| KV namespace      | =bacce09fc96f4951a5447b13c8433cb5=           |
+| KV binding        | =CACHE=                                      |
+| Plan              | Workers Paid ($5/mo)                         |
+| Wrangler version  | 4.71.0                                       |
 
-| Resource         | Free Tier        | Paid ($5/mo)     |
-|------------------+------------------+------------------|
-| Requests         | 100K/day         | 10M/mo           |
-| CPU per request  | 10ms (too low!)  | 30s              |
-| KV reads         | 100K/day         | 10M/mo           |
-| KV writes        | 1K/day           | 1M/mo            |
-| KV storage       | 1 GB             | included         |
+* Updated Cost Picture
 
-*Verdict:* needs the $5/mo paid plan due to matplotlib CPU time.
+With pure SVG rendering (no matplotlib in worker):
 
-* Execution Order
+| Resource        | Free Tier   | Paid ($5/mo) | Notes                    |
+|-----------------+-------------+--------------+--------------------------|
+| CPU/request     | 10 ms       | 30 s         | SVG gen ~1ms; free works |
+| Worker size     | 3 MiB       | 10 MiB       | ~75KB; free works        |
+| Requests        | 100K/day    | 10M/month    | fine on free             |
+| KV reads        | 100K/day    | 10M/month    | fine on free             |
+| KV writes       | 1K/day      | 1M/month     | fine on free             |
 
-1. [ ] Extract =alarms_core.py= from =alarms_graph.py=
-2. [ ] Refactor =alarms_graph.py= to import from =alarms_core=
-3. [ ] Verify local CLI still works identically
-4. [ ] Generate bundled city translations dict
-5. [ ] Handle seaborn absence gracefully
-6. [ ] Scaffold worker project (=wrangler init=)
-7. [ ] Implement =worker/entry.py= with KV-cached fetching
-8. [ ] Build landing page
-9. [ ] Test with =wrangler dev=
-10. [ ] Deploy with =wrangler deploy=
+SVG rendering would work on the *free plan*. The paid plan ($5/mo)
+was purchased and is active — no need to downgrade, but good to know.
+
+* Original Risks — Updated Verdicts
+
+| Risk                       | Original Assessment     | Actual Outcome                  |
+|----------------------------+-------------------------+---------------------------------|
+| Cold start latency (3–10s) | Acceptable              | Irrelevant — CPU limit hit      |
+| CPU limits                 | Paid 30s — fine         | WRONG. matplotlib exceeds 30s   |
+| Memory (128 MB)            | Might be tight          | Not reached (CPU failed first)  |
+| seaborn not in Pyodide     | Easy fallback           | Correct, handled fine           |
+| No ET-Book font            | Acceptable fallback     | Correct                         |
+| ZoneInfo in Pyodide        | Should work             | WRONG. Needs tzdata package     |
+|                            |                         | Fixed by moving out of core     |
+| PIL not in Pyodide         | Not mentioned           | Top-level import in matplotlib  |
+|                            |                         | Fixed with minimal stubs        |
+| requirements.txt packages  | "coming soon"           | Still broken for old API        |
+|                            |                         | pywrangler + pyproject.toml works|
+| on_fetch handler           | Standard API            | DEPRECATED as of wrangler 4.71  |
+|                            |                         | Must use WorkerEntrypoint class |

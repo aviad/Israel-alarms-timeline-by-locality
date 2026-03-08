@@ -5,3 +5,5 @@ tzevaadom_last_hour.json
 session_id.txt
 alarms_frequency.png
 *.png
+__pycache__
+worker/python_modules/
