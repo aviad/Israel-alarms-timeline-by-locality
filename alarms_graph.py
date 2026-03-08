@@ -250,7 +250,7 @@ def plot(
         return
 
     start = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
-    end = times[-1].date()
+    end = max(times[-1].date(), datetime.date.today())
     days = []
     d = start
     while d <= end:
