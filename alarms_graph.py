@@ -177,12 +177,33 @@ if __name__ == "__main__":
 
     output = pathlib.Path(args.output)
     if output.suffix.lower() == ".png":
+        import base64
+        import re
         import cairosvg
-        output.write_bytes(cairosvg.svg2png(bytestring=svg_bytes, scale=2))
+
+        # Embed local ETBembo fonts so cairosvg renders them correctly
+        # (it cannot fetch the Google Fonts @import from the network).
+        font_dir = pathlib.Path.home() / ".local/share/fonts/et-book"
+        faces = [
+            ("ETBembo", "normal", "400", "et-book-roman-line-figures.ttf"),
+            ("ETBembo", "normal", "700", "et-book-bold-line-figures.ttf"),
+            ("ETBembo", "italic", "400", "et-book-display-italic-old-style-figures.ttf"),
+        ]
+        font_css = "".join(
+            f'@font-face{{font-family:"ETBembo";font-style:{s};font-weight:{w};'
+            f'src:url("data:font/truetype;base64,{base64.b64encode((font_dir / f).read_bytes()).decode()}") format("truetype");}}'
+            for _, s, w, f in faces
+            if (font_dir / f).exists()
+        )
+        if font_css:
+            svg_bytes = re.sub(rb'@import url\([^)]+\);?', font_css.encode(), svg_bytes)
+
+        output.write_bytes(cairosvg.svg2png(bytestring=svg_bytes, scale=6))
     else:
         output.write_bytes(svg_bytes)
     print(f"Saved: {args.output}")
 
     # Display the chart
     import webbrowser
+
     webbrowser.open(output.resolve().as_uri())
