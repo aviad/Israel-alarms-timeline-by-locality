@@ -2,8 +2,7 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #   "requests",
-#   "matplotlib",
-#   "seaborn",
+#   "cairosvg",
 # ]
 # ///
 """
@@ -23,7 +22,6 @@ import datetime
 import pathlib
 from zoneinfo import ZoneInfo
 
-import matplotlib.font_manager as fm
 import requests
 
 from alarms_core import (
@@ -46,10 +44,6 @@ CACHE_MAX_AGE_MINUTES = 30
 
 API_CACHE_FILE = pathlib.Path("alerts_cache.json")
 API_CACHE_MAX_AGE_MINUTES = 2
-
-# Register ET-Book fonts once at import time
-for _f in pathlib.Path.home().glob(".local/share/fonts/et-book/*.ttf"):
-    fm.fontManager.addfont(str(_f))
 
 
 def parse_args() -> argparse.Namespace:
@@ -85,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--output",
-        default="alarms_frequency.png",
+        default="alarms_frequency.svg",
         help="Output file path (default: %(default)s)",
     )
     p.add_argument(
@@ -177,18 +171,18 @@ if __name__ == "__main__":
     times = sorted(times + api_times)
     print(f"Matched {len(times)} alerts for '{args.label}' (since {args.start}).")
 
-    img_bytes = render_chart(
+    svg_bytes = render_chart(
         times, args.label, args.bin_hours, args.start, data_cutoff, args.style
     )
-    pathlib.Path(args.output).write_bytes(img_bytes)
+
+    output = pathlib.Path(args.output)
+    if output.suffix.lower() == ".png":
+        import cairosvg
+        output.write_bytes(cairosvg.svg2png(bytestring=svg_bytes, scale=2))
+    else:
+        output.write_bytes(svg_bytes)
     print(f"Saved: {args.output}")
 
     # Display the chart
-    import io
-    import matplotlib.pyplot as plt
-    import matplotlib.image as mpimg
-    fig, ax = plt.subplots()
-    ax.imshow(mpimg.imread(io.BytesIO(img_bytes)))
-    ax.axis("off")
-    plt.tight_layout()
-    plt.show()
+    import webbrowser
+    webbrowser.open(output.resolve().as_uri())

@@ -3,10 +3,10 @@ Cloudflare Python Worker entry point for alarms-graph.
 
 Serves:
   GET /          → landing page (HTML form)
-  GET /chart.png → PNG chart
-  GET /chart.svg → SVG chart
+  GET /chart.svg → SVG chart (also accepts /chart.png)
 """
 
+import io
 import json
 from urllib.parse import urlparse, parse_qs
 
@@ -28,73 +28,87 @@ from alarms_core import (
 
 
 def _build_landing_html() -> str:
-    options = sorted(CITY_TRANSLATIONS.items(), key=lambda x: x[1])
-    option_tags = "\n".join(
-        f'<option value="{he}">{en}</option>' for he, en in options
-    )
+    cities_data = [["", "כל האזורים / All Areas"]] + sorted(CITY_TRANSLATIONS.items())
+    cities_js = json.dumps(cities_data)
 
     return f"""<!DOCTYPE html>
-<html lang="en">
+<html lang="he">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Alarms Graph — Israel Rocket Alert Frequency</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
   <style>
     body {{
-      font-family: Georgia, Palatino, "DejaVu Serif", serif;
-      background: #f0ede3;
-      color: #333;
-      max-width: 860px;
-      margin: 40px auto;
-      padding: 0 20px;
+      font-family: "EB Garamond", Georgia, Palatino, serif;
+      background: #f0ede3; color: #333;
+      max-width: 860px; margin: 40px auto; padding: 0 20px;
+      direction: ltr;
     }}
     h1 {{ font-size: 1.6rem; font-weight: bold; margin-bottom: 0.3em; }}
     p.sub {{ color: #888; margin-top: 0; }}
     form {{ margin: 1.5em 0; display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }}
-    label {{ display: flex; flex-direction: column; font-size: 0.9rem; color: #555; gap: 4px; }}
-    select, input[type=date] {{
-      font-family: inherit;
-      font-size: 1rem;
-      padding: 4px 8px;
-      border: 1px solid #ccc;
-      background: #faf9f5;
-      border-radius: 3px;
+    label.field {{ display: flex; flex-direction: column; font-size: 0.9rem; color: #555; gap: 4px; }}
+    input[type=date], .combo-inp {{
+      font-family: inherit; font-size: 1rem;
+      padding: 4px 8px; border: 1px solid #ccc;
+      background: #faf9f5; border-radius: 3px; min-width: 200px;
     }}
+    .combo {{ position: relative; }}
+    .combo-inp {{ width: 100%; box-sizing: border-box; direction: rtl; }}
+    .combo-drop {{
+      display: none; position: absolute; top: 100%; left: 0; right: 0;
+      background: #faf9f5; border: 1px solid #ccc; border-top: none;
+      max-height: 220px; overflow-y: auto; z-index: 100;
+    }}
+    .combo-opt {{
+      padding: 5px 8px; cursor: pointer; direction: rtl; font-size: 0.95rem;
+    }}
+    .combo-opt:hover, .combo-opt.hi {{ background: #e8e5db; }}
+    .combo-opt .en {{ color: #aaa; font-size: 0.78rem; margin-right: 8px; direction: ltr; display: inline-block; }}
     .radios {{ display: flex; gap: 12px; align-items: center; }}
-    button {{
-      font-family: inherit;
-      font-size: 1rem;
-      padding: 6px 20px;
-      background: #555;
-      color: #f0ede3;
-      border: none;
-      border-radius: 3px;
-      cursor: pointer;
+    button.go {{
+      font-family: inherit; font-size: 1rem;
+      padding: 6px 20px; background: #555; color: #f0ede3;
+      border: none; border-radius: 3px; cursor: pointer;
     }}
-    button:hover {{ background: #333; }}
+    button.go:hover {{ background: #333; }}
     #chart-wrap {{ margin-top: 1.5em; }}
-    #chart-wrap img {{ max-width: 100%; border: 1px solid #ddd; }}
+    #chart-wrap object {{ max-width: 100%; display: block; border: 1px solid #ddd; }}
+    .dl-bar {{ margin-top: 8px; display: flex; gap: 10px; }}
+    .dl-bar a {{
+      font-size: 0.9rem; color: #555; text-decoration: none;
+      border: 1px solid #ccc; padding: 3px 12px;
+      border-radius: 3px; background: #faf9f5;
+    }}
+    .dl-bar a:hover {{ background: #e8e5db; }}
   </style>
 </head>
 <body>
   <h1>Rocket Alert Frequency</h1>
-  <p class="sub">Israel Civil Defense alert data · <a href="https://github.com/yuval-harpaz/alarms">yuval-harpaz/alarms</a></p>
+  <p class="sub">
+    Data: <a href="https://github.com/yuval-harpaz/alarms">yuval-harpaz/alarms</a> ·
+    App: <a href="https://github.com/aviad/Israel-alarms-timeline-by-locality">aviad/Israel-alarms-timeline-by-locality</a>
+  </p>
 
   <form id="form">
-    <label>
-      Area
-      <select name="area" id="area">
-        <option value="">All Areas</option>
-        {option_tags}
-      </select>
+    <label class="field">
+      אזור / Area
+      <div class="combo">
+        <input class="combo-inp" id="area-inp" type="text" autocomplete="off"
+               placeholder="חפש עיר… / search city" value="{DEFAULT_AREA_FILTER}">
+        <div class="combo-drop" id="area-drop"></div>
+      </div>
+      <input type="hidden" name="area" id="area-val" value="{DEFAULT_AREA_FILTER}">
     </label>
 
-    <label>
+    <label class="field">
       Start date
       <input type="date" name="start" id="start" value="{DEFAULT_START}">
     </label>
 
-    <label>
+    <label class="field">
       Style
       <div class="radios">
         <label><input type="radio" name="style" value="lines" checked> Lines</label>
@@ -102,26 +116,86 @@ def _build_landing_html() -> str:
       </div>
     </label>
 
-    <button type="submit">Generate chart</button>
+    <button class="go" type="submit">Generate chart</button>
   </form>
 
   <div id="chart-wrap"></div>
 
   <script>
+    const CITIES = {cities_js};
+    const inp  = document.getElementById('area-inp');
+    const drop = document.getElementById('area-drop');
+    const hidden = document.getElementById('area-val');
+    let hi = -1;
+
+    function renderDrop(items) {{
+      hi = -1;
+      drop.innerHTML = items.slice(0, 80).map(([he, en]) =>
+        `<div class="combo-opt" data-v="${{he}}">${{he || '<em>כל האזורים</em>'}} <span class="en">${{en}}</span></div>`
+      ).join('');
+      drop.style.display = items.length ? 'block' : 'none';
+    }}
+
+    function filterCities() {{
+      const q = inp.value.trim().toLowerCase();
+      renderDrop(q ? CITIES.filter(([he, en]) => he.includes(q) || en.toLowerCase().includes(q)) : CITIES);
+    }}
+
+    inp.addEventListener('focus', () => {{ inp.value = ''; filterCities(); }});
+    inp.addEventListener('input', filterCities);
+
+    inp.addEventListener('keydown', e => {{
+      const opts = drop.querySelectorAll('.combo-opt');
+      if      (e.key === 'ArrowDown')  hi = Math.min(hi + 1, opts.length - 1);
+      else if (e.key === 'ArrowUp')    hi = Math.max(hi - 1, 0);
+      else if (e.key === 'Enter' && drop.style.display !== 'none') {{ e.preventDefault(); opts[Math.max(hi, 0)].click(); return; }}
+      else if (e.key === 'Escape')     {{ drop.style.display = 'none'; return; }}
+      else return;
+      opts.forEach((o, i) => o.classList.toggle('hi', i === hi));
+      if (hi >= 0) opts[hi].scrollIntoView({{block: 'nearest'}});
+    }});
+
+    drop.addEventListener('mousedown', e => {{
+      const opt = e.target.closest('.combo-opt');
+      if (!opt) return;
+      e.preventDefault();
+      hidden.value = inp.value = opt.dataset.v;
+      drop.style.display = 'none';
+    }});
+
+    inp.addEventListener('blur', () => setTimeout(() => {{
+      drop.style.display = 'none';
+      if (inp.value === '') inp.value = hidden.value;
+    }}, 200));
+
     document.getElementById('form').addEventListener('submit', function(e) {{
       e.preventDefault();
       const fd = new FormData(this);
       const params = new URLSearchParams();
       for (const [k, v] of fd.entries()) if (v) params.set(k, v);
-      const src = '/chart.png?' + params.toString();
       const wrap = document.getElementById('chart-wrap');
-      wrap.innerHTML = '<p style="color:#888">Generating chart… (first load may take ~10s)</p>';
-      const img = new Image();
-      img.onload = () => {{ wrap.innerHTML = ''; wrap.appendChild(img); }};
-      img.onerror = () => {{ wrap.innerHTML = '<p style="color:red">Error generating chart.</p>'; }};
-      img.src = src;
-      img.alt = 'Alarms frequency chart';
-      img.style.maxWidth = '100%';
+      wrap.innerHTML = '<p style="color:#888">Generating chart…</p>';
+      fetch('/chart.svg?' + params).then(r => {{
+        if (!r.ok) return r.text().then(t => {{ throw new Error(t); }});
+        return r.blob();
+      }}).then(blob => {{
+        const url = URL.createObjectURL(blob);
+        const obj = document.createElement('object');
+        obj.type = 'image/svg+xml';
+        obj.data = url;
+        wrap.innerHTML = '';
+        wrap.appendChild(obj);
+        const bar = document.createElement('div');
+        bar.className = 'dl-bar';
+        const dl = document.createElement('a');
+        dl.href = url;
+        dl.download = 'alarms-chart.svg';
+        dl.textContent = '↓ Download SVG';
+        bar.appendChild(dl);
+        wrap.appendChild(bar);
+      }}).catch(err => {{
+        wrap.innerHTML = `<p style="color:red">Error: ${{err.message}}</p>`;
+      }});
     }});
   </script>
 </body>
@@ -131,8 +205,8 @@ def _build_landing_html() -> str:
 class Default(WorkerEntrypoint):
 
     async def _fetch_csv(self) -> tuple[str, str]:
-        """Fetch alarms CSV from KV cache or GitHub."""
-        cached = await self.env.CACHE.get("csv:alarms")
+        """Fetch alarms CSV from KV cache or GitHub. Filters to rows >= 2026-02-27."""
+        cached = await self.env.CACHE.get("csv:alarms:v3")
         if cached:
             meta = await self.env.CACHE.get("csv:meta") or ""
             return cached, meta
@@ -141,9 +215,27 @@ class Default(WorkerEntrypoint):
         text = await resp.text()
         last_mod = resp.headers.get("Last-Modified") or ""
 
-        await self.env.CACHE.put("csv:alarms", text, to_js({"expirationTtl": 30 * 60}))
+        # Filter to recent rows to stay within the 128 MB worker memory limit.
+        # The full CSV (~122K rows) is too large; we only need data from Feb 27.
+        CUTOFF = "2026-02-27"
+        buf = io.StringIO(text)
+        header = buf.readline()
+        cols = header.strip().split(",")
+        try:
+            time_idx = cols.index("time")
+        except ValueError:
+            time_idx = 1
+        lines = [header]
+        for line in buf:
+            parts = line.split(",", time_idx + 1)
+            if len(parts) > time_idx and parts[time_idx].strip('"')[:10] >= CUTOFF:
+                lines.append(line)
+        del text
+        filtered = "".join(lines)
+
+        await self.env.CACHE.put("csv:alarms:v3", filtered, to_js({"expirationTtl": 30 * 60}))
         await self.env.CACHE.put("csv:meta", last_mod, to_js({"expirationTtl": 30 * 60}))
-        return text, last_mod
+        return filtered, last_mod
 
     async def _fetch_api_data(self) -> list[dict]:
         """Fetch recent alerts from tzevaadom API via KV cache."""
@@ -174,8 +266,6 @@ class Default(WorkerEntrypoint):
         style = (params.get("style", ["lines"]) or ["lines"])[0]
         threat = int((params.get("threat", ["0"]) or ["0"])[0])
         bin_hours = int((params.get("bin_hours", [str(DEFAULT_BIN_HOURS)]) or [str(DEFAULT_BIN_HOURS)])[0])
-        fmt = "svg" if path.endswith(".svg") else "png"
-
         try:
             csv_text, _last_mod = await self._fetch_csv()
             times, seen_ids = load_alerts(csv_text, area, threat, start)
@@ -187,17 +277,16 @@ class Default(WorkerEntrypoint):
             api_times = load_api_alerts(api_data, area, threat, start, seen_ids)
             times = sorted(times + api_times)
 
-            img_bytes = render_chart(times, label, bin_hours, start, None, style, fmt)
+            svg = render_chart(times, label, bin_hours, start, None, style).decode("utf-8")
         except ValueError as exc:
             return Response(str(exc), status=400)
         except Exception as exc:
             return Response(f"Internal error: {exc}", status=500)
 
-        content_type = "image/svg+xml" if fmt == "svg" else "image/png"
         return Response(
-            img_bytes,
+            svg,
             headers={
-                "Content-Type": content_type,
+                "Content-Type": "image/svg+xml; charset=utf-8",
                 "Cache-Control": "public, max-age=120",
             },
         )

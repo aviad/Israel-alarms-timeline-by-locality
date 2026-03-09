@@ -9,16 +9,6 @@ import datetime
 import io
 import math
 
-import matplotlib.font_manager as fm
-from matplotlib.path import Path
-import matplotlib.pyplot as plt
-
-try:
-    import seaborn as sns
-    HAS_SEABORN = True
-except ImportError:
-    HAS_SEABORN = False
-
 # ── Constants ─────────────────────────────────────────────────────────────────
 DEFAULT_AREA_FILTER = "תל אביב - מרכז העיר"
 DEFAULT_BIN_HOURS = 1
@@ -32,7 +22,6 @@ TZEVAADOM_API_URL = "https://api.tzevaadom.co.il/alerts-history/"
 BG_COLOR = "#f0ede3"
 NIGHT_DOT_COLOR = "#333333"
 DAY_DOT_COLOR = "#888888"
-DOT_S = 28
 # ─────────────────────────────────────────────────────────────────────────────
 
 CITY_TRANSLATIONS = {
@@ -1666,14 +1655,20 @@ CITY_TRANSLATIONS = {
 }
 
 
-def _make_wedge_marker(start_frac: float, end_frac: float, n: int = 32) -> Path:
-    """Pie-wedge Path for scatter marker: clockwise from top, fractions 0-1."""
-    t0 = math.pi / 2 - start_frac * 2 * math.pi
-    t1 = math.pi / 2 - end_frac * 2 * math.pi
-    thetas = [t0 + (t1 - t0) * k / (n - 1) for k in range(n)]
-    verts = [(0.0, 0.0)] + [(math.cos(t), math.sin(t)) for t in thetas] + [(0.0, 0.0)]
-    codes = [Path.MOVETO] + [Path.LINETO] * n + [Path.CLOSEPOLY]
-    return Path(verts, codes)
+def _svg_wedge(cx: float, cy: float, r: float, start_frac: float, end_frac: float, color: str) -> str:
+    """SVG arc path for a pie wedge, fractions 0–1 clockwise from top."""
+    t0 = -math.pi / 2 + start_frac * 2 * math.pi
+    t1 = -math.pi / 2 + end_frac * 2 * math.pi
+    x0 = cx + r * math.cos(t0)
+    y0 = cy + r * math.sin(t0)
+    x1 = cx + r * math.cos(t1)
+    y1 = cy + r * math.sin(t1)
+    large = 1 if (end_frac - start_frac) > 0.5 else 0
+    return (
+        f'<path d="M {cx:.1f},{cy:.1f} L {x0:.2f},{y0:.2f} '
+        f'A {r:.1f},{r:.1f} 0 {large},1 {x1:.2f},{y1:.2f} Z" '
+        f'fill="{color}"/>'
+    )
 
 
 def load_alerts(
@@ -1743,15 +1738,13 @@ def render_chart(
     start_date: str = DEFAULT_START,
     data_cutoff: datetime.datetime | None = None,
     style: str = "lines",
-    fmt: str = "png",
+    fmt: str = "svg",
 ) -> bytes:
-    """Generate chart and return image bytes (PNG or SVG).
-
-    Pure rendering — no file I/O, no plt.show().
-    """
+    """Generate chart and return SVG bytes. Pure Python, no dependencies."""
     if not times:
         raise ValueError("No alerts found — cannot render chart.")
 
+    # ── Data ─────────────────────────────────────────────────────────────────
     start = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
     end = max(times[-1].date(), datetime.date.today())
     days = []
@@ -1759,6 +1752,7 @@ def render_chart(
     while d <= end:
         days.append(d)
         d += datetime.timedelta(days=1)
+    n_days = len(days)
 
     bins: dict[tuple, int] = {}
     for t in times:
@@ -1775,223 +1769,179 @@ def render_chart(
         for day in days
     }
 
-    if HAS_SEABORN:
-        sns.set_theme(style="ticks", font_scale=1.0)
-    else:
-        plt.rcParams.update({"axes.edgecolor": "#cccccc", "axes.linewidth": 0.6})
-
-    plt.rcParams["font.family"] = "serif"
-    plt.rcParams["font.serif"] = ["ETBembo", "Palatino", "Georgia", "DejaVu Serif"]
-
-    n_days = len(days)
-    fig, ax = plt.subplots(figsize=(8, max(3, n_days * 0.32 + 1.5)))
-    fig.patch.set_facecolor(BG_COLOR)
-    ax.set_facecolor(BG_COLOR)
-
-    NIGHT_COLOR = "#e2dfd5"
-    ax.axvspan(0, 7, color=NIGHT_COLOR, zorder=0, linewidth=0)
-    ax.axvspan(21, 24, color=NIGHT_COLOR, zorder=0, linewidth=0)
+    times_by_day: dict = {}
+    for t in times:
+        times_by_day.setdefault(t.date(), []).append(t)
 
     now = datetime.datetime.now()
     cutoff_date = now.date()
     cutoff_hour = now.hour + now.minute / 60
 
-    times_by_day: dict = {}
-    for t in times:
-        times_by_day.setdefault(t.date(), []).append(t)
+    # ── Layout ───────────────────────────────────────────────────────────────
+    ROW_H = 20
+    LEFT_MARGIN = 68
+    TOP_MARGIN = 58
+    BOTTOM_MARGIN = 30
+    HOUR_W = 22
+    CHART_W = 24 * HOUR_W
+    DOT_COL_X = LEFT_MARGIN + CHART_W + 30
+    SVG_W = LEFT_MARGIN + CHART_W + 56
+    CHART_H = n_days * ROW_H
+    SVG_H = TOP_MARGIN + CHART_H + BOTTOM_MARGIN
+    NIGHT_BG = "#e2dfd5"
+    grey = "#888888"
+    tick_h = ROW_H * 0.12  # half-height of alert tick marks
 
+    def xpx(h: float) -> float:
+        return LEFT_MARGIN + h * HOUR_W
+
+    def ypx(i: int) -> float:
+        return TOP_MARGIN + i * ROW_H + ROW_H / 2
+
+    def dot_r(n: int) -> float:
+        return max(3.0, min(ROW_H * 0.44, math.sqrt(n) * 3.5))
+
+    # ── Build SVG ─────────────────────────────────────────────────────────────
+    o: list[str] = []
+    o.append(
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{SVG_W}" height="{SVG_H}" '
+        f'style="background:{BG_COLOR}">'
+    )
+    o.append(
+        '<style>'
+        '@import url("https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,700;1,400&amp;display=swap");'
+        'text{font-family:ETBembo,"EB Garamond",Georgia,Palatino,serif}'
+        '</style>'
+    )
+
+    # Night shading bands
+    o.append(
+        f'<rect x="{xpx(0):.0f}" y="{TOP_MARGIN}" '
+        f'width="{7 * HOUR_W}" height="{CHART_H}" fill="{NIGHT_BG}"/>'
+    )
+    o.append(
+        f'<rect x="{xpx(21):.0f}" y="{TOP_MARGIN}" '
+        f'width="{3 * HOUR_W}" height="{CHART_H}" fill="{NIGHT_BG}"/>'
+    )
+
+    # Per-row baselines, date labels, alert marks
     for i, day in enumerate(days):
-        y = -i
-        line_end = cutoff_hour if day == cutoff_date else 24
-        ax.plot([0, line_end], [y, y], color="#cccccc", linewidth=0.4, zorder=1)
+        yc = ypx(i)
+        line_end = cutoff_hour if day == cutoff_date else 24.0
+        o.append(
+            f'<line x1="{xpx(0):.0f}" y1="{yc:.1f}" '
+            f'x2="{xpx(line_end):.1f}" y2="{yc:.1f}" '
+            f'stroke="#cccccc" stroke-width="0.4"/>'
+        )
+        label = day.strftime("%a %-d %b")
+        o.append(
+            f'<text x="{LEFT_MARGIN - 6}" y="{yc:.1f}" text-anchor="end" '
+            f'dominant-baseline="middle" font-size="9" fill="#555555">{label}</text>'
+        )
         if style == "lines":
             for t in times_by_day.get(day, []):
-                x = t.hour + t.minute / 60 + t.second / 3600
-                dot_color = (
-                    NIGHT_DOT_COLOR if (t.hour < 7 or t.hour >= 21) else DAY_DOT_COLOR
-                )
-                ax.plot(
-                    [x, x],
-                    [y - 0.12, y + 0.12],
-                    color=dot_color,
-                    linewidth=0.8,
-                    solid_capstyle="butt",
-                    zorder=3,
-                    clip_on=True,
+                xh = t.hour + t.minute / 60 + t.second / 3600
+                col = NIGHT_DOT_COLOR if (t.hour < 7 or t.hour >= 21) else DAY_DOT_COLOR
+                xp = xpx(xh)
+                o.append(
+                    f'<line x1="{xp:.2f}" y1="{yc - tick_h:.1f}" '
+                    f'x2="{xp:.2f}" y2="{yc + tick_h:.1f}" '
+                    f'stroke="{col}" stroke-width="0.8" stroke-linecap="butt"/>'
                 )
         else:
             for h in range(0, 24, bin_hours):
                 count = bins.get((day, h), 0)
                 if count > 0:
-                    dot_color = NIGHT_DOT_COLOR if (h < 7 or h >= 21) else DAY_DOT_COLOR
-                    ax.scatter(
-                        [h + bin_hours / 2],
-                        [y],
-                        s=DOT_S * count,
-                        color=dot_color,
-                        zorder=3,
-                        clip_on=False,
+                    col = NIGHT_DOT_COLOR if (h < 7 or h >= 21) else DAY_DOT_COLOR
+                    xc = xpx(h + bin_hours / 2)
+                    o.append(
+                        f'<circle cx="{xc:.1f}" cy="{yc:.1f}" r="{dot_r(count):.1f}" fill="{col}"/>'
                     )
 
-    x_end = 26.5
-    ax.set_xlim(0, x_end)
-    ax.set_ylim(-n_days + 0.5, 0.5)
-    ax.set_yticks(range(0, -n_days, -1))
-    ax.set_yticklabels(
-        [d.strftime("%a %-d %b") for d in days], fontsize=8, color="#555555"
+    # Bottom axis line + x-axis labels (Tufte-style: offset, bold, thick)
+    AXIS_OFFSET = 6  # px gap separating axis from chart area
+    axis_y = TOP_MARGIN + CHART_H + AXIS_OFFSET
+    TICK_W = 1.0
+    o.append(
+        f'<line x1="{xpx(0) - TICK_W / 2:.1f}" y1="{axis_y}" '
+        f'x2="{xpx(24) + TICK_W / 2:.1f}" y2="{axis_y}" stroke="#444444" stroke-width="1.5"/>'
     )
-    ax.tick_params(axis="y", length=0)
-    ax.set_xticks(range(0, 25, 3))
-    ax.set_xticklabels(
-        [f"{h:02d}:00" for h in range(0, 25, 3)], fontsize=8, color="#555555"
+    for h in range(0, 25, 3):
+        xp = xpx(h)
+        o.append(
+            f'<line x1="{xp:.0f}" y1="{axis_y}" x2="{xp:.0f}" y2="{axis_y + 6}" '
+            f'stroke="#444444" stroke-width="{TICK_W}"/>'
+        )
+        o.append(
+            f'<text x="{xp:.0f}" y="{axis_y + 16}" text-anchor="middle" '
+            f'font-size="8" font-weight="bold" fill="#444444">{h:02d}:00</text>'
+        )
+
+    # Total-count column
+    o.append(
+        f'<text x="{DOT_COL_X:.0f}" y="{TOP_MARGIN - 6}" text-anchor="middle" '
+        f'font-size="7" fill="{grey}">total</text>'
     )
-    ax.tick_params(axis="x", colors="#555555", labelsize=9)
-
-    if HAS_SEABORN:
-        sns.despine(ax=ax, left=True, right=True, top=True, bottom=False, offset=6)
-    else:
-        for spine in ["left", "right", "top"]:
-            ax.spines[spine].set_visible(False)
-        ax.spines["bottom"].set_position(("outward", 6))
-
-    grey = "#888888"
-    DOT_X = 25.5
-    ax.text(DOT_X, 0.55, "total", fontsize=7, color=grey, va="bottom", ha="center")
     for i, day in enumerate(days):
         tot = daily_totals[day]
-        if tot:
-            night = daily_night[day]
-            night_frac = night / tot
-            s = DOT_S * tot
-            if night_frac <= 0:
-                ax.scatter(
-                    [DOT_X], [-i], s=s, color=DAY_DOT_COLOR, zorder=3, clip_on=False
-                )
-            elif night_frac >= 1:
-                ax.scatter(
-                    [DOT_X], [-i], s=s, color=NIGHT_DOT_COLOR, zorder=3, clip_on=False
-                )
-            else:
-                ax.scatter(
-                    [DOT_X],
-                    [-i],
-                    s=s,
-                    marker=_make_wedge_marker(0, night_frac),
-                    color=NIGHT_DOT_COLOR,
-                    zorder=3,
-                    clip_on=False,
-                )
-                ax.scatter(
-                    [DOT_X],
-                    [-i],
-                    s=s,
-                    marker=_make_wedge_marker(night_frac, 1.0),
-                    color=DAY_DOT_COLOR,
-                    zorder=3,
-                    clip_on=False,
-                )
-            ax.text(
-                DOT_X,
-                -i,
-                str(tot),
-                fontsize=6,
-                color="white",
-                va="center",
-                ha="center",
-                zorder=4,
+        if not tot:
+            continue
+        yc = ypx(i)
+        night_frac = daily_night[day] / tot
+        r = dot_r(tot)
+        if night_frac <= 0:
+            o.append(
+                f'<circle cx="{DOT_COL_X:.0f}" cy="{yc:.1f}" r="{r:.1f}" fill="{DAY_DOT_COLOR}"/>'
             )
-
-    date_range = f"{times[0].strftime('%b %d')} \u2013 {times[-1].strftime('%b %d, %Y')}"
-    ax.set_title(
-        f"Rocket alert frequency \u2014 {area_label}",
-        loc="left",
-        fontsize=13,
-        fontweight="bold",
-        pad=26,
-    )
-    ax.text(
-        0,
-        1.04,
-        f"{date_range}   ({len(times)} alerts)",
-        transform=ax.transAxes,
-        fontsize=9,
-        color=grey,
-        va="bottom",
-    )
-
-    leg_x = 24 / x_end
-    leg_y = 1.065
-    if style == "dots":
-        leg_label = f"alerts per {bin_hours}h:"
-        for c, lbl in [(5, "5"), (1, "1")]:
-            ax.text(
-                leg_x,
-                leg_y,
-                lbl,
-                transform=ax.transAxes,
-                fontsize=9,
-                color=grey,
-                va="center",
-                ha="right",
+        elif night_frac >= 1:
+            o.append(
+                f'<circle cx="{DOT_COL_X:.0f}" cy="{yc:.1f}" r="{r:.1f}" fill="{NIGHT_DOT_COLOR}"/>'
             )
-            leg_x -= 0.022
-            ax.scatter(
-                [leg_x],
-                [leg_y],
-                s=DOT_S * c,
-                color=NIGHT_DOT_COLOR,
-                transform=ax.transAxes,
-                clip_on=False,
-                zorder=4,
-            )
-            leg_x -= 0.03
-        ax.text(
-            leg_x,
-            leg_y,
-            leg_label,
-            transform=ax.transAxes,
-            fontsize=9,
-            color=grey,
-            va="center",
-            ha="right",
+        else:
+            o.append(_svg_wedge(DOT_COL_X, yc, r, 0, night_frac, NIGHT_DOT_COLOR))
+            o.append(_svg_wedge(DOT_COL_X, yc, r, night_frac, 1.0, DAY_DOT_COLOR))
+        o.append(
+            f'<text x="{DOT_COL_X:.0f}" y="{yc:.1f}" text-anchor="middle" '
+            f'dominant-baseline="middle" font-size="6" fill="white">{tot}</text>'
         )
-        lx = leg_x - 0.18
-    else:
-        lx = leg_x
-    ax.scatter(
-        [lx],
-        [leg_y],
-        s=DOT_S * 2,
-        marker=_make_wedge_marker(0.5, 1.0),
-        color=NIGHT_DOT_COLOR,
-        transform=ax.transAxes,
-        clip_on=False,
-        zorder=4,
+
+    # Title + subtitle
+    date_range = f"{times[0].strftime('%b %d')} \u2013 {times[-1].strftime('%b %d, %Y')}"
+    o.append(
+        f'<text x="{xpx(0):.0f}" y="15" font-size="14" font-weight="bold" fill="#222222">'
+        f'Rocket alert frequency \u2014 {area_label}</text>'
     )
-    ax.scatter(
-        [lx],
-        [leg_y],
-        s=DOT_S * 2,
-        marker=_make_wedge_marker(0, 0.5),
-        color=DAY_DOT_COLOR,
-        transform=ax.transAxes,
-        clip_on=False,
-        zorder=4,
-    )
-    ax.text(
-        lx - 0.012,
-        leg_y,
-        "night/day:",
-        fontsize=9,
-        color=grey,
-        va="center",
-        ha="right",
-        transform=ax.transAxes,
+    o.append(
+        f'<text x="{xpx(0):.0f}" y="31" font-size="9" fill="{grey}">'
+        f'{date_range}   ({len(times)} alerts)</text>'
     )
 
-    plt.tight_layout()
-    buf = io.BytesIO()
-    plt.savefig(buf, format=fmt, dpi=150, bbox_inches="tight")
-    plt.close()
-    buf.seek(0)
-    return buf.read()
+    # Legend (upper-right area, right-aligned to chart edge)
+    leg_y = 45.0
+    leg_r = 4.5
+    icon_x = xpx(24) - 4.0
+    o.append(_svg_wedge(icon_x, leg_y, leg_r, 0.5, 1.0, NIGHT_DOT_COLOR))
+    o.append(_svg_wedge(icon_x, leg_y, leg_r, 0.0, 0.5, DAY_DOT_COLOR))
+    o.append(
+        f'<text x="{icon_x - leg_r - 3:.1f}" y="{leg_y}" text-anchor="end" '
+        f'dominant-baseline="middle" font-size="9" fill="{grey}">night/day:</text>'
+    )
+    if style == "dots":
+        dot_leg_x = icon_x - 100.0
+        for cnt, lbl in [(5, "5"), (1, "1")]:
+            r = dot_r(cnt)
+            o.append(
+                f'<circle cx="{dot_leg_x:.1f}" cy="{leg_y:.0f}" r="{r:.1f}" fill="{NIGHT_DOT_COLOR}"/>'
+            )
+            o.append(
+                f'<text x="{dot_leg_x + r + 2:.1f}" y="{leg_y}" '
+                f'dominant-baseline="middle" font-size="9" fill="{grey}">{lbl}</text>'
+            )
+            dot_leg_x -= r * 2 + 24
+        o.append(
+            f'<text x="{dot_leg_x:.1f}" y="{leg_y}" text-anchor="end" '
+            f'dominant-baseline="middle" font-size="9" fill="{grey}">alerts per {bin_hours}h:</text>'
+        )
+
+    o.append('</svg>')
+    return ''.join(o).encode('utf-8')
