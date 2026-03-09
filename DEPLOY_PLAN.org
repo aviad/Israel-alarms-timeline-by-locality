@@ -50,7 +50,7 @@ All chart requests succeed. CPU ~700ms, memory within 128MB limit.
   - Keyboard navigation (↑↓ Enter Escape), clears on focus, restores on blur
   - Start date picker, Lines/Dots radio
   - SVG displayed via =<object>= (not =<img>=) so Google Fonts load
-  - After chart renders: =↓ SVG= download, =↓ PNG= download, =⎘ Copy PNG= (with WhatsApp icon)
+  - After chart renders: =↓ SVG= download, =↓ PNG= download, =⎘= copy icon
   - PNG rasterized client-side via =<canvas>=; Google Fonts fetched and embedded
     as base64 =@font-face= data URIs in the SVG before =drawImage= so EB Garamond
     renders correctly (canvas sandboxes =<object>=, blocking the =@import=)
@@ -206,7 +206,13 @@ counts are trivially within free limits.
 
 * Remaining Work
 
-Nothing known outstanding.
+** Mobile-Responsive UI [DONE]
+- Added =@media (max-width: 600px)= CSS block: form fields stack vertically,
+  44px min-height touch targets on inputs, larger combo options, full-width button
+- Changed =input[type=date], .combo-inp= to =box-sizing: border-box= and =min-width: 0= on mobile
+- Changed =#chart-wrap object= from =max-width: 100%= to =width: 100%= so SVG fills screen
+- Changed chart container JS from =inline-block= to =display:block; width:100%=
+- Added =<meta name="theme-color">= for PWA homescreen feel
 
 * Risk Verdicts
 

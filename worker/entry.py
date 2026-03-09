@@ -36,6 +36,7 @@ def _build_landing_html() -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f0ede3">
   <title>Alarms Graph — Israel Rocket Alert Frequency</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
@@ -54,6 +55,7 @@ def _build_landing_html() -> str:
       font-family: inherit; font-size: 1rem;
       padding: 4px 8px; border: 1px solid #ccc;
       background: #faf9f5; border-radius: 3px; min-width: 200px;
+      box-sizing: border-box;
     }}
     .combo {{ position: relative; }}
     .combo-inp {{ width: 100%; box-sizing: border-box; direction: rtl; }}
@@ -74,16 +76,37 @@ def _build_landing_html() -> str:
       border: none; border-radius: 3px; cursor: pointer;
     }}
     button.go:hover {{ background: #333; }}
-    #chart-wrap {{ margin-top: 1.5em; }}
-    #chart-wrap object {{ max-width: 100%; display: block; border: 1px solid #ddd; }}
+    #chart-wrap {{ margin-top: 1.5em; overflow-x: auto; -webkit-overflow-scrolling: touch; }}
+    #chart-wrap object {{ max-width: none; display: block; border: 1px solid #ddd; }}
+    #rotate-hint {{
+      display: none; margin: 0.5em 0; font-size: 0.85rem; color: #888;
+    }}
+    @media (orientation: portrait) and (max-width: 700px) {{
+      #rotate-hint {{ display: block; }}
+    }}
+    @media (max-width: 600px) {{
+      body {{ margin: 16px auto; padding: 0 12px; }}
+      form {{ gap: 10px; }}
+      label.field {{ width: 100%; min-width: 0; }}
+      input[type=date], .combo-inp {{ min-width: 0; min-height: 44px; padding: 8px; }}
+      .combo-opt {{ padding: 10px 8px; }}
+      button.go {{ width: 100%; padding: 12px; font-size: 1.1rem; }}
+      .dl-btn {{ padding: 6px 14px; font-size: 1rem; }}
+    }}
     .dl-bar {{ margin-top: 8px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }}
     .dl-btn {{
       font-family: inherit; font-size: 0.9rem; color: #555; text-decoration: none;
       border: 1px solid #ccc; padding: 3px 12px;
       border-radius: 3px; background: #faf9f5; cursor: pointer;
+      display: inline-flex; align-items: center; line-height: 1;
     }}
     .dl-btn:hover {{ background: #e8e5db; }}
     .dl-btn:disabled {{ opacity: 0.6; cursor: default; }}
+    .copy-overlay {{
+      position: absolute; top: 8px; right: 8px; z-index: 10;
+      opacity: 0.55; padding: 4px 8px;
+    }}
+    .copy-overlay:hover {{ opacity: 1; }}
   </style>
 </head>
 <body>
@@ -120,6 +143,7 @@ def _build_landing_html() -> str:
     <button class="go" type="submit">Generate chart</button>
   </form>
 
+  <p id="rotate-hint">↻ Rotate to landscape for best view</p>
   <div id="chart-wrap"></div>
 
   <script>
@@ -169,11 +193,16 @@ def _build_landing_html() -> str:
       if (inp.value === '') inp.value = hidden.value;
     }}, 200));
 
+    function submitChart() {{
+      document.getElementById('form').dispatchEvent(new Event('submit', {{bubbles: true, cancelable: true}}));
+    }}
+
     document.getElementById('form').addEventListener('submit', function(e) {{
       e.preventDefault();
       const fd = new FormData(this);
       const params = new URLSearchParams();
       for (const [k, v] of fd.entries()) if (v) params.set(k, v);
+      history.pushState(null, '', '?' + params);
       const wrap = document.getElementById('chart-wrap');
       wrap.innerHTML = '<p style="color:#888">Generating chart…</p>';
       fetch('/chart.svg?' + params).then(r => {{
@@ -184,8 +213,11 @@ def _build_landing_html() -> str:
         const obj = document.createElement('object');
         obj.type = 'image/svg+xml';
         obj.data = url;
+        const chartContainer = document.createElement('div');
+        chartContainer.style.cssText = 'position:relative;display:inline-block;';
+        chartContainer.appendChild(obj);
         wrap.innerHTML = '';
-        wrap.appendChild(obj);
+        wrap.appendChild(chartContainer);
 
         async function svgToPng(scale) {{
           const svgText = await blob.text();
@@ -260,16 +292,44 @@ def _build_landing_html() -> str:
           Object.assign(document.createElement('a'), {{href: pu, download: 'alarms-chart.png'}}).click();
           URL.revokeObjectURL(pu);
         }}));
-        const WA_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" style="vertical-align:middle;margin-left:5px"><circle cx="12" cy="12" r="12" fill="#25D366"/><path fill="#fff" d="M17.5 14.4c-.3-.1-1.7-.8-2-1-.3-.1-.5-.1-.7.2-.2.3-.8 1-.9 1.2-.2.2-.3.2-.6.1-.3-.2-1.3-.5-2.4-1.5-.9-.8-1.5-1.8-1.7-2.1-.2-.3 0-.5.1-.6l.4-.5c.1-.2.2-.3.3-.5.1-.2 0-.3 0-.5-.1-.1-.7-1.6-1-2.2-.2-.6-.5-.5-.7-.5h-.6c-.2 0-.5.1-.8.4C7.7 7 7 7.8 7 9.2c0 1.4 1.1 2.8 1.2 3 .2.2 2 3.2 5 4.4.7.3 1.2.5 1.7.6.7.2 1.3.2 1.8.1.5-.1 1.7-.7 1.9-1.4.2-.6.2-1.2.1-1.4-.1-.1-.3-.2-.7-.1z"/></svg>';
-        bar.appendChild(mkBtn('⎘ Copy PNG' + WA_ICON, async () => {{
+        async function doCopy() {{
           const png = await svgToPng(2);
           await navigator.clipboard.write([new ClipboardItem({{'image/png': png}})]);
-        }}));
+        }}
+        bar.appendChild(mkBtn('⎘', doCopy));
+
+        const overlayBtn = document.createElement('button');
+        overlayBtn.className = 'dl-btn copy-overlay';
+        overlayBtn.textContent = '⎘';
+        overlayBtn.onclick = async () => {{
+          const orig = overlayBtn.textContent;
+          overlayBtn.disabled = true;
+          try {{ await doCopy(); overlayBtn.textContent = '✓'; }}
+          catch(e) {{ overlayBtn.textContent = '✗'; }}
+          setTimeout(() => {{ overlayBtn.textContent = orig; overlayBtn.disabled = false; }}, 2000);
+        }};
+        chartContainer.appendChild(overlayBtn);
         wrap.appendChild(bar);
       }}).catch(err => {{
         wrap.innerHTML = `<p style="color:red">Error: ${{err.message}}</p>`;
       }});
     }});
+
+    // Pre-fill form from URL params and auto-generate if any are present
+    (function() {{
+      const sp = new URLSearchParams(window.location.search);
+      if (sp.has('area')) {{
+        const a = sp.get('area');
+        const entry = CITIES.find(([he]) => he === a);
+        hidden.value = inp.value = entry ? a : '';
+      }}
+      if (sp.has('start')) document.getElementById('start').value = sp.get('start');
+      if (sp.has('style')) {{
+        const s = sp.get('style');
+        document.querySelectorAll('input[name=style]').forEach(r => r.checked = r.value === s);
+      }}
+      if (sp.has('area') || sp.has('start') || sp.has('style')) submitChart();
+    }})();
   </script>
 </body>
 </html>"""
