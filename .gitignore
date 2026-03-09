@@ -7,3 +7,4 @@ alarms_frequency.png
 *.png
 __pycache__
 worker/python_modules/
+**/*.svg
