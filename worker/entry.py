@@ -39,7 +39,7 @@ def _build_landing_html() -> str:
   <meta name="theme-color" content="#f0ede3">
   <title>Alarms Graph — Israel Rocket Alert Frequency</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,700;1,400&family=Alef&display=swap" rel="stylesheet">
   <style>
     body {{
       font-family: "EB Garamond", Georgia, Palatino, serif;
@@ -112,7 +112,7 @@ def _build_landing_html() -> str:
 <body>
   <h1>Rocket Alert Frequency</h1>
   <p class="sub">
-    Data: <a href="https://github.com/yuval-harpaz/alarms">yuval-harpaz/alarms</a>, <a href="https://www.tzevaadom.co.il/">צופר - צבע אדום</a> ·
+    Data: <a href="https://github.com/yuval-harpaz/alarms">yuval-harpaz/alarms</a>, <a href="https://www.tzevaadom.co.il/" style="font-family: 'Alef', sans-serif;">צופר - צבע אדום</a> ·
     App: <a href="https://github.com/aviad/Israel-alarms-timeline-by-locality">aviad/Israel-alarms-timeline-by-locality</a>
   </p>
 
