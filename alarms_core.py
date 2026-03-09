@@ -1773,7 +1773,17 @@ def render_chart(
     for t in times:
         times_by_day.setdefault(t.date(), []).append(t)
 
-    now = datetime.datetime.now()
+    # Israel time: UTC+2 (winter) / UTC+3 (DST, last Sun Mar → last Sun Oct)
+    _utc = datetime.datetime.utcnow()
+    def _israel_offset(dt):
+        y = dt.year
+        # Last Sunday of March (Mon=0 … Sun=6, so days back = (wd+1)%7)
+        mar31 = datetime.date(y, 3, 31)
+        dst_start = datetime.datetime(y, 3, 31 - (mar31.weekday() + 1) % 7, 2)
+        oct31 = datetime.date(y, 10, 31)
+        dst_end   = datetime.datetime(y, 10, 31 - (oct31.weekday() + 1) % 7, 2)
+        return 3 if dst_start <= dt < dst_end else 2
+    now = _utc + datetime.timedelta(hours=_israel_offset(_utc))
     cutoff_date = now.date()
     cutoff_hour = now.hour + now.minute / 60
 

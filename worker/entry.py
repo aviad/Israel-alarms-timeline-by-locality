@@ -76,13 +76,14 @@ def _build_landing_html() -> str:
     button.go:hover {{ background: #333; }}
     #chart-wrap {{ margin-top: 1.5em; }}
     #chart-wrap object {{ max-width: 100%; display: block; border: 1px solid #ddd; }}
-    .dl-bar {{ margin-top: 8px; display: flex; gap: 10px; }}
-    .dl-bar a {{
-      font-size: 0.9rem; color: #555; text-decoration: none;
+    .dl-bar {{ margin-top: 8px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }}
+    .dl-btn {{
+      font-family: inherit; font-size: 0.9rem; color: #555; text-decoration: none;
       border: 1px solid #ccc; padding: 3px 12px;
-      border-radius: 3px; background: #faf9f5;
+      border-radius: 3px; background: #faf9f5; cursor: pointer;
     }}
-    .dl-bar a:hover {{ background: #e8e5db; }}
+    .dl-btn:hover {{ background: #e8e5db; }}
+    .dl-btn:disabled {{ opacity: 0.6; cursor: default; }}
   </style>
 </head>
 <body>
@@ -185,13 +186,85 @@ def _build_landing_html() -> str:
         obj.data = url;
         wrap.innerHTML = '';
         wrap.appendChild(obj);
+
+        async function svgToPng(scale) {{
+          const svgText = await blob.text();
+          let modSvg = svgText;
+          try {{
+            // Embed Google Fonts as base64 data URIs so canvas can render them
+            const fontCssUrl = 'https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,700;1,400&display=swap';
+            const css = await fetch(fontCssUrl).then(r => r.text());
+            function toB64(buf) {{
+              const bytes = new Uint8Array(buf);
+              let s = '';
+              for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+              return btoa(s);
+            }}
+            const fontUrls = [...new Set([...css.matchAll(/url\((https:\/\/[^)]+)\)/g)].map(m => m[1]))];
+            let embCss = css;
+            for (const u of fontUrls) {{
+              const buf = await fetch(u).then(r => r.arrayBuffer());
+              const mime = u.includes('.woff2') ? 'font/woff2' : 'font/woff';
+              embCss = embCss.split(u).join('data:' + mime + ';base64,' + toB64(buf));
+            }}
+            modSvg = svgText.replace(/@import url\([^)]+\);?/, embCss);
+          }} catch(e) {{ /* fall back to original SVG; fonts may not render */ }}
+          return new Promise((resolve, reject) => {{
+            const blobUrl = URL.createObjectURL(new Blob([modSvg], {{type: 'image/svg+xml'}}));
+            const img = new Image();
+            img.onload = () => {{
+              const canvas = document.createElement('canvas');
+              canvas.width  = (img.naturalWidth  || 800) * scale;
+              canvas.height = (img.naturalHeight || 600) * scale;
+              const ctx = canvas.getContext('2d');
+              ctx.scale(scale, scale);
+              ctx.drawImage(img, 0, 0);
+              URL.revokeObjectURL(blobUrl);
+              canvas.toBlob(resolve, 'image/png');
+            }};
+            img.onerror = reject;
+            img.src = blobUrl;
+          }});
+        }}
+
+        function mkBtn(label, action) {{
+          const b = document.createElement('button');
+          b.className = 'dl-btn';
+          b.innerHTML = label;
+          b.onclick = async () => {{
+            const orig = b.innerHTML;
+            b.disabled = true;
+            try {{
+              await action();
+              b.innerHTML = '✓';
+            }} catch(e) {{
+              b.innerHTML = '✗';
+            }}
+            setTimeout(() => {{ b.innerHTML = orig; b.disabled = false; }}, 2000);
+          }};
+          return b;
+        }}
+
+        const dlSvg = document.createElement('a');
+        dlSvg.className = 'dl-btn';
+        dlSvg.href = url;
+        dlSvg.download = 'alarms-chart.svg';
+        dlSvg.textContent = '↓ SVG';
+
         const bar = document.createElement('div');
         bar.className = 'dl-bar';
-        const dl = document.createElement('a');
-        dl.href = url;
-        dl.download = 'alarms-chart.svg';
-        dl.textContent = '↓ Download SVG';
-        bar.appendChild(dl);
+        bar.appendChild(dlSvg);
+        bar.appendChild(mkBtn('↓ PNG', async () => {{
+          const png = await svgToPng(2);
+          const pu = URL.createObjectURL(png);
+          Object.assign(document.createElement('a'), {{href: pu, download: 'alarms-chart.png'}}).click();
+          URL.revokeObjectURL(pu);
+        }}));
+        const WA_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" style="vertical-align:middle;margin-left:5px"><circle cx="12" cy="12" r="12" fill="#25D366"/><path fill="#fff" d="M17.5 14.4c-.3-.1-1.7-.8-2-1-.3-.1-.5-.1-.7.2-.2.3-.8 1-.9 1.2-.2.2-.3.2-.6.1-.3-.2-1.3-.5-2.4-1.5-.9-.8-1.5-1.8-1.7-2.1-.2-.3 0-.5.1-.6l.4-.5c.1-.2.2-.3.3-.5.1-.2 0-.3 0-.5-.1-.1-.7-1.6-1-2.2-.2-.6-.5-.5-.7-.5h-.6c-.2 0-.5.1-.8.4C7.7 7 7 7.8 7 9.2c0 1.4 1.1 2.8 1.2 3 .2.2 2 3.2 5 4.4.7.3 1.2.5 1.7.6.7.2 1.3.2 1.8.1.5-.1 1.7-.7 1.9-1.4.2-.6.2-1.2.1-1.4-.1-.1-.3-.2-.7-.1z"/></svg>';
+        bar.appendChild(mkBtn('⎘ Copy PNG' + WA_ICON, async () => {{
+          const png = await svgToPng(2);
+          await navigator.clipboard.write([new ClipboardItem({{'image/png': png}})]);
+        }}));
         wrap.appendChild(bar);
       }}).catch(err => {{
         wrap.innerHTML = `<p style="color:red">Error: ${{err.message}}</p>`;
