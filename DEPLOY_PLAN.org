@@ -24,12 +24,18 @@ All chart requests succeed. CPU ~700ms, memory within 128MB limit.
 - Constants: =DEFAULT_AREA_FILTER=, =DEFAULT_BIN_HOURS=, =DEFAULT_START=,
   =ALARMS_CSV_URL=, =TZEVAADOM_API_URL=, color constants
 - No matplotlib, no seaborn, no PIL — pure stdlib (=csv=, =datetime=, =io=, =math=)
+- =render_chart= uses Israel local time for today's line cutoff:
+  =datetime.utcnow()= + offset computed from last-Sunday-of-March/October DST rule
+  (UTC+3 DST, UTC+2 winter)
 
 ** =alarms_graph.py= — thin CLI wrapper [DONE]
 - Imports all logic from =alarms_core=
 - Owns: =argparse=, =requests=, file-based cache, =ISRAEL_TZ=
 - Default output: =alarms_frequency.svg=
-- PNG export: =cairosvg.svg2png(bytestring=svg_bytes, scale=2)= when =--output *.png=
+- PNG export: =cairosvg.svg2png(bytestring=svg_bytes, scale=6)= when =--output *.png=
+  - Before rasterizing: replaces =@import= with embedded =@font-face= rules
+    using locally installed ETBembo TTFs (=~/.local/share/fonts/et-book/=)
+    as base64 data URIs — cairosvg cannot fetch Google Fonts from the network
 - Display: =webbrowser.open(path.as_uri())= instead of =plt.show()=
 - Dependencies (inline script metadata): =requests=, =cairosvg= only
 
@@ -44,7 +50,10 @@ All chart requests succeed. CPU ~700ms, memory within 128MB limit.
   - Keyboard navigation (↑↓ Enter Escape), clears on focus, restores on blur
   - Start date picker, Lines/Dots radio
   - SVG displayed via =<object>= (not =<img>=) so Google Fonts load
-  - =↓ Download SVG= button after chart renders
+  - After chart renders: =↓ SVG= download, =↓ PNG= download, =⎘ Copy PNG= (with WhatsApp icon)
+  - PNG rasterized client-side via =<canvas>=; Google Fonts fetched and embedded
+    as base64 =@font-face= data URIs in the SVG before =drawImage= so EB Garamond
+    renders correctly (canvas sandboxes =<object>=, blocking the =@import=)
   - Credits: yuval-harpaz/alarms (data) + aviad/Israel-alarms-timeline-by-locality (app)
 - Chart endpoint: =/chart.svg= and =/chart.png= (both serve SVG)
 - KV caching: filtered CSV at 30-minute TTL (key =csv:alarms:v3=),
@@ -197,17 +206,7 @@ counts are trivially within free limits.
 
 * Remaining Work
 
-** PNG copy/export in UI [TODO]
-
-Single-click PNG copy or download from the browser.
-Options:
-1. Server-side: add =/chart.png= endpoint that calls a headless renderer
-   (not available in Cloudflare Workers)
-2. Client-side: use =<canvas>= to rasterize the =<object>= SVG, then
-   =canvas.toBlob()= → download or =navigator.clipboard.write()=
-3. Keep PNG export CLI-only (=cairosvg= works locally)
-
-Recommended: client-side canvas rasterization.
+Nothing known outstanding.
 
 * Risk Verdicts
 
