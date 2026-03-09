@@ -371,14 +371,18 @@ class Default(WorkerEntrypoint):
         return filtered, last_mod
 
     async def _fetch_api_data(self) -> list[dict]:
-        """Fetch recent alerts from tzevaadom API via KV cache."""
-        cached = await self.env.CACHE.get("api:alerts")
+        """Fetch recent alerts from tzevaadom API via KV cache (1-min buckets)."""
+        import time
+        bucket = int(time.time()) // 60  # changes every 1 minute
+        cache_key = f"api:v1:{bucket}"
+
+        cached = await self.env.CACHE.get(cache_key)
         if cached:
             return json.loads(cached)
 
         resp = await js_fetch(TZEVAADOM_API_URL)
         text = await resp.text()
-        await self.env.CACHE.put("api:alerts", text, to_js({"expirationTtl": 2 * 60}))
+        await self.env.CACHE.put(cache_key, text, to_js({"expirationTtl": 2 * 60}))
         return json.loads(text)
 
     async def fetch(self, request):

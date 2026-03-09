@@ -1671,6 +1671,24 @@ def _svg_wedge(cx: float, cy: float, r: float, start_frac: float, end_frac: floa
     )
 
 
+def _israel_utc_offset(utc_dt: datetime.datetime) -> int:
+    """Return Israel UTC offset (2 or 3) for a given UTC datetime.
+    DST: last Friday of March 02:00 → last Sunday of October 02:00 (Israel rule).
+    """
+    y = utc_dt.year
+    mar31_wd = datetime.date(y, 3, 31).weekday()  # Mon=0 … Sun=6
+    dst_start = datetime.datetime(y, 3, 31 - (mar31_wd + 3) % 7, 2)  # last Friday
+    oct31_wd = datetime.date(y, 10, 31).weekday()
+    dst_end = datetime.datetime(y, 10, 31 - (oct31_wd + 1) % 7, 2)   # last Sunday
+    return 3 if dst_start <= utc_dt < dst_end else 2
+
+
+def _epoch_to_israel(ts: float) -> datetime.datetime:
+    """Convert Unix timestamp to Israel local time."""
+    utc = datetime.datetime.utcfromtimestamp(ts)
+    return utc + datetime.timedelta(hours=_israel_utc_offset(utc))
+
+
 def load_alerts(
     csv_text: str, area_filter: str, threat: int, start: str
 ) -> tuple[list[datetime.datetime], set[str]]:
@@ -1717,7 +1735,7 @@ def load_api_alerts(
         if gid in seen_ids:
             continue
         for alert in group.get("alerts", []):
-            dt = datetime.datetime.fromtimestamp(alert["time"])
+            dt = _epoch_to_israel(alert["time"])
             if dt < cutoff:
                 continue
             if threat >= 0 and alert.get("threat") != threat:
@@ -1773,17 +1791,8 @@ def render_chart(
     for t in times:
         times_by_day.setdefault(t.date(), []).append(t)
 
-    # Israel time: UTC+2 (winter) / UTC+3 (DST, last Sun Mar → last Sun Oct)
     _utc = datetime.datetime.utcnow()
-    def _israel_offset(dt):
-        y = dt.year
-        # Last Sunday of March (Mon=0 … Sun=6, so days back = (wd+1)%7)
-        mar31 = datetime.date(y, 3, 31)
-        dst_start = datetime.datetime(y, 3, 31 - (mar31.weekday() + 1) % 7, 2)
-        oct31 = datetime.date(y, 10, 31)
-        dst_end   = datetime.datetime(y, 10, 31 - (oct31.weekday() + 1) % 7, 2)
-        return 3 if dst_start <= dt < dst_end else 2
-    now = _utc + datetime.timedelta(hours=_israel_offset(_utc))
+    now = _utc + datetime.timedelta(hours=_israel_utc_offset(_utc))
     cutoff_date = now.date()
     cutoff_hour = now.hour + now.minute / 60
 

@@ -204,6 +204,28 @@ Note: CPU is ~700ms per request (Pyodide cold start dominates), which
 requires the paid plan (free limit is 10ms). Worker size and request
 counts are trivially within free limits.
 
+* What Was Learned (continued)
+
+** Israel DST rule: last Friday of March, not last Sunday
+
+The original inline =_israel_offset= in =render_chart= used "last Sunday of March"
+which is the EU rule. Israel's rule is last *Friday* of March → last Sunday of October.
+Example: 2026 DST = Fri Mar 27 → Sun Oct 25.
+
+Fix: extracted =_israel_utc_offset(utc_dt)= and =_epoch_to_israel(ts)= as module-level
+helpers in =alarms_core.py= with the correct formula:
+- DST start: =31 - (mar31_wd + 3) % 7= (last Friday)
+- DST end:   =31 - (oct31_wd + 1) % 7= (last Sunday, was already correct)
+
+** API epoch timestamps: fromtimestamp() uses system timezone
+
+=datetime.datetime.fromtimestamp(ts)= uses the system local timezone.
+On Cloudflare/Pyodide this is UTC; locally it is Asia/Jerusalem.
+This caused the latest alarms (from the tzevaadom API) to appear at wrong times
+or on the wrong day on Cloudflare, while appearing correctly locally.
+Fix: use =_epoch_to_israel(ts)= (explicit UTC → Israel conversion) in =load_api_alerts=.
+The CSV timestamps are already stored as Israel local time strings, so =strptime= is fine.
+
 * Remaining Work
 
 ** Mobile-Responsive UI [DONE]
