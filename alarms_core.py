@@ -2024,23 +2024,54 @@ def render_chart(
             f'dominant-baseline="middle" font-size="6" fill="white">{tot}</text>'
         )
 
-    # Prediction: dashed circle right of solid total on today's row
-    # Stroke width encodes uncertainty: thicker = larger σ
+    # Prediction: three-zone forecast indicator
+    #   1. Center hole: background-colored at dot_r(today_so_far)
+    #   2. Inner gray ring up to dashed line
+    #   3. Dashed circle at expected value
+    #   4. Outer gray ring from dashed line to max
+    # Uses linear scaling (px per alert) so all three zones are visible.
     if is_today_row:
         i_today = days.index(cutoff_date)
         yc_today = ypx(i_today)
         pred_cx = DOT_COL_X + 10
-        pred_r = dot_r(int(round(pred_total)))
-        sw = max(0.5, min(3.5, pred_sigma * 0.75))
+        pred_int = int(round(pred_total))
+        pred_max = int(round(pred_total + pred_sigma))
+        # Linear scale: px_per_alert anchored so center matches dot_r
+        r_center = dot_r(today_so_far) if today_so_far > 0 else 1.5
+        px_per = r_center / max(today_so_far, 1) if today_so_far > 0 else 1.5
+        r_expected = r_center + px_per * (pred_int - today_so_far)
+        r_max = r_center + px_per * (pred_max - today_so_far)
+        # Clamp to keep within row height
+        max_r = ROW_H * 0.48
+        if r_max > max_r:
+            scale = (max_r - r_center) / max(r_max - r_center, 0.1)
+            r_expected = r_center + (r_expected - r_center) * scale
+            r_max = max_r
+        ring_color = "#b0b0b0"
+        bg = "#f0ede3"
+        # 4. Outer gray disk (bottom layer)
         o.append(
-            f'<circle cx="{pred_cx:.0f}" cy="{yc_today:.1f}" r="{pred_r:.1f}" '
-            f'fill="none" stroke="{DAY_DOT_COLOR}" stroke-width="{sw:.1f}" '
+            f'<circle cx="{pred_cx:.0f}" cy="{yc_today:.1f}" r="{r_max:.1f}" '
+            f'fill="{ring_color}" opacity="0.45"/>'
+        )
+        # 2. Inner gray already covered by outer disk; punch out center
+        # 1. Center hole
+        o.append(
+            f'<circle cx="{pred_cx:.0f}" cy="{yc_today:.1f}" r="{r_center:.1f}" '
+            f'fill="{bg}"/>'
+        )
+        # 3. Solid circle at expected
+        o.append(
+            f'<circle cx="{pred_cx:.0f}" cy="{yc_today:.1f}" r="{r_expected:.1f}" '
+            f'fill="none" stroke="{DAY_DOT_COLOR}" stroke-width="0.5" '
             f'stroke-dasharray="2,2"/>'
         )
+        # Label: always inside the inner gray ring, centered between hole and line
+        lbl = f'~{pred_int}'
         o.append(
             f'<text x="{pred_cx:.0f}" y="{yc_today:.1f}" text-anchor="middle" '
-            f'dominant-baseline="middle" font-size="6" fill="{DAY_DOT_COLOR}">'
-            f'~{pred_total:.0f}</text>'
+            f'dominant-baseline="middle" font-size="6" fill="#555555">'
+            f'{lbl}</text>'
         )
 
     # Title + subtitle
@@ -2066,13 +2097,23 @@ def render_chart(
     )
     if has_prediction:
         exp_x = icon_x - 55.0
+        # Legend: gray ring + dashed circle matching forecast visualization
+        o.append(
+            f'<circle cx="{exp_x:.1f}" cy="{leg_y:.0f}" r="{leg_r + 3:.1f}" '
+            f'fill="#b0b0b0" opacity="0.45"/>'
+        )
+        bg = "#f0ede3"
+        o.append(
+            f'<circle cx="{exp_x:.1f}" cy="{leg_y:.0f}" r="{leg_r - 1.5:.1f}" '
+            f'fill="{bg}"/>'
+        )
         o.append(
             f'<circle cx="{exp_x:.1f}" cy="{leg_y:.0f}" r="{leg_r:.1f}" '
-            f'fill="none" stroke="{DAY_DOT_COLOR}" stroke-width="1" '
+            f'fill="none" stroke="{DAY_DOT_COLOR}" stroke-width="0.5" '
             f'stroke-dasharray="2,2"/>'
         )
         o.append(
-            f'<text x="{exp_x - leg_r - 3:.1f}" y="{leg_y}" text-anchor="end" '
+            f'<text x="{exp_x - leg_r - 6:.1f}" y="{leg_y}" text-anchor="end" '
             f'dominant-baseline="middle" font-size="9" fill="{grey}">forecast:</text>'
         )
     if style == "dots":
