@@ -1921,10 +1921,10 @@ def render_chart(
     def ypx(i: int) -> float:
         return TOP_MARGIN + i * ROW_H + ROW_H / 2
 
-    max_bin = max(bins.values()) if bins else 1
     max_daily = max(daily_totals.values()) if daily_totals else 1
-    def dot_r(n: int, ref: int = max_bin, scale: float = 0.18) -> float:
-        return max(1.5, math.sqrt(n / ref) * ROW_H * scale)
+    def dot_r(n: int) -> float:
+        # area ∝ n: r = k*sqrt(n), k chosen so max daily total → radius ROW_H*0.35
+        return math.sqrt(n / max_daily) * ROW_H * 0.504
 
     # ── Build SVG ─────────────────────────────────────────────────────────────
     o: list[str] = []
@@ -2015,7 +2015,7 @@ def render_chart(
         yc = ypx(i)
         cx = DOT_COL_X
         night_frac = daily_night[day] / tot
-        r = dot_r(tot, max_daily, scale=0.35)
+        r = dot_r(tot)
         if night_frac <= 0:
             o.append(
                 f'<circle cx="{cx:.0f}" cy="{yc:.1f}" r="{r:.1f}" fill="{DAY_DOT_COLOR}"/>'
