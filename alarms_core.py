@@ -2055,7 +2055,7 @@ def render_chart(
         o.append(
             f'<text x="{ax1 - 2:.1f}" y="{ay1:.1f}" text-anchor="end" '
             f'dominant-baseline="middle" font-size="7" font-style="italic" fill="{grey}">'
-            f'today\'s forecast</text>'
+            f'rest of today (est.)</text>'
         )
 
     # Title + subtitle
