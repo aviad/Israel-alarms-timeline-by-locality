@@ -1689,6 +1689,97 @@ def _epoch_to_israel(ts: float) -> datetime.datetime:
     return utc + datetime.timedelta(hours=_israel_utc_offset(utc))
 
 
+# ── Predictor ─────────────────────────────────────────────────────────────────
+
+
+def _solve_normal_equation(X: list[list[float]], y: list[float]) -> list[float]:
+    """Solve (XᵀX)⁻¹Xᵀy for linear regression. X must include bias column."""
+    n, p = len(X), len(X[0])
+    XtX = [[sum(X[k][i] * X[k][j] for k in range(n)) for j in range(p)] for i in range(p)]
+    Xty = [sum(X[k][i] * y[k] for k in range(n)) for i in range(p)]
+    # Gauss-Jordan inversion
+    aug = [XtX[i][:] + [1.0 if i == j else 0.0 for j in range(p)] for i in range(p)]
+    for col in range(p):
+        max_row = max(range(col, p), key=lambda r: abs(aug[r][col]))
+        aug[col], aug[max_row] = aug[max_row], aug[col]
+        pivot = aug[col][col]
+        if abs(pivot) < 1e-12:
+            return [0.0] * p  # singular — return zeros (no prediction)
+        for j in range(2 * p):
+            aug[col][j] /= pivot
+        for row in range(p):
+            if row != col:
+                f = aug[row][col]
+                for j in range(2 * p):
+                    aug[row][j] -= f * aug[col][j]
+    inv = [aug[i][p:] for i in range(p)]
+    return [sum(inv[i][j] * Xty[j] for j in range(p)) for i in range(p)]
+
+
+def predict_remaining(
+    times: list[datetime.datetime],
+    now: datetime.datetime | None = None,
+    recent_days: int = 7,
+) -> tuple[float, float]:
+    """Predict how many alerts remain today after *now*.
+
+    Uses linear regression with 3 features:
+      hours_remaining, alerts_today_so_far, recent_rate (avg/day last N days).
+    Trained on historical (day, hour) pairs from *times*.
+
+    Returns (expected_remaining, std_dev).
+    Returns (0.0, 0.0) if insufficient data.
+    """
+    if now is None:
+        _utc = datetime.datetime.utcnow()
+        now = _utc + datetime.timedelta(hours=_israel_utc_offset(_utc))
+
+    today = now.date()
+    current_hour = now.hour
+
+    # Group by day
+    by_day: dict[datetime.date, list[datetime.datetime]] = {}
+    for t in times:
+        by_day.setdefault(t.date(), []).append(t)
+
+    all_days = sorted(by_day.keys())
+    train_days = [d for d in all_days if d < today]
+    if len(train_days) < 2:
+        return 0.0, 0.0
+
+    # Build training data
+    X, y = [], []
+    for day in train_days:
+        day_times = by_day[day]
+        day_total = len(day_times)
+        window_start = day - datetime.timedelta(days=recent_days)
+        recent_counts = [len(by_day.get(d, [])) for d in train_days if window_start <= d < day]
+        recent_rate = sum(recent_counts) / max(len(recent_counts), 1)
+        for hour in range(24):
+            so_far = sum(1 for t in day_times if t.hour < hour)
+            X.append([1.0, 24 - hour, so_far, recent_rate])
+            y.append(day_total - so_far)
+
+    beta = _solve_normal_equation(X, y)
+
+    # Features for now
+    today_times = by_day.get(today, [])
+    alerts_so_far = sum(1 for t in today_times if t.hour < current_hour)
+    window_start = today - datetime.timedelta(days=recent_days)
+    recent_counts = [len(by_day.get(d, [])) for d in train_days if window_start <= d < today]
+    recent_rate = sum(recent_counts) / max(len(recent_counts), 1)
+
+    x = [1.0, 24 - current_hour, alerts_so_far, recent_rate]
+    pred = max(0.0, sum(a * b for a, b in zip(x, beta)))
+
+    # Residual std
+    n, p = len(y), len(beta)
+    ss = sum((y[i] - sum(X[i][j] * beta[j] for j in range(p))) ** 2 for i in range(n))
+    sigma = math.sqrt(ss / max(n - p, 1))
+
+    return round(pred, 1), round(sigma, 1)
+
+
 def load_alerts(
     csv_text: str, area_filter: str, threat: int, start: str
 ) -> tuple[list[datetime.datetime], set[str]]:
@@ -1796,15 +1887,21 @@ def render_chart(
     cutoff_date = now.date()
     cutoff_hour = now.hour + now.minute / 60
 
+    # ── Prediction for today ──────────────────────────────────────────────────
+    pred_remaining, pred_sigma = predict_remaining(times, now=now)
+    today_so_far = daily_totals.get(cutoff_date, 0)
+    pred_total = today_so_far + pred_remaining
+    has_prediction = pred_remaining > 0 or pred_sigma > 0
+
     # ── Layout ───────────────────────────────────────────────────────────────
     ROW_H = 20
     LEFT_MARGIN = 68
     TOP_MARGIN = 58
-    BOTTOM_MARGIN = 30
     HOUR_W = 22
     CHART_W = 24 * HOUR_W
     DOT_COL_X = LEFT_MARGIN + CHART_W + 30
     SVG_W = LEFT_MARGIN + CHART_W + 56
+    BOTTOM_MARGIN = 30
     CHART_H = n_days * ROW_H
     SVG_H = TOP_MARGIN + CHART_H + BOTTOM_MARGIN
     NIGHT_BG = "#e2dfd5"
@@ -1896,32 +1993,54 @@ def render_chart(
             f'font-size="8" font-weight="bold" fill="#444444">{h:02d}:00</text>'
         )
 
-    # Total-count column
+    # Total-count column header
     o.append(
         f'<text x="{DOT_COL_X:.0f}" y="{TOP_MARGIN - 6}" text-anchor="middle" '
         f'font-size="7" fill="{grey}">total</text>'
     )
+    is_today_row = has_prediction and cutoff_date in days
     for i, day in enumerate(days):
         tot = daily_totals[day]
         if not tot:
             continue
         yc = ypx(i)
+        # Shift solid circle left on today's row to make room for prediction
+        cx = DOT_COL_X - 10 if (is_today_row and day == cutoff_date) else DOT_COL_X
         night_frac = daily_night[day] / tot
         r = dot_r(tot)
         if night_frac <= 0:
             o.append(
-                f'<circle cx="{DOT_COL_X:.0f}" cy="{yc:.1f}" r="{r:.1f}" fill="{DAY_DOT_COLOR}"/>'
+                f'<circle cx="{cx:.0f}" cy="{yc:.1f}" r="{r:.1f}" fill="{DAY_DOT_COLOR}"/>'
             )
         elif night_frac >= 1:
             o.append(
-                f'<circle cx="{DOT_COL_X:.0f}" cy="{yc:.1f}" r="{r:.1f}" fill="{NIGHT_DOT_COLOR}"/>'
+                f'<circle cx="{cx:.0f}" cy="{yc:.1f}" r="{r:.1f}" fill="{NIGHT_DOT_COLOR}"/>'
             )
         else:
-            o.append(_svg_wedge(DOT_COL_X, yc, r, 0, night_frac, NIGHT_DOT_COLOR))
-            o.append(_svg_wedge(DOT_COL_X, yc, r, night_frac, 1.0, DAY_DOT_COLOR))
+            o.append(_svg_wedge(cx, yc, r, 0, night_frac, NIGHT_DOT_COLOR))
+            o.append(_svg_wedge(cx, yc, r, night_frac, 1.0, DAY_DOT_COLOR))
         o.append(
-            f'<text x="{DOT_COL_X:.0f}" y="{yc:.1f}" text-anchor="middle" '
+            f'<text x="{cx:.0f}" y="{yc:.1f}" text-anchor="middle" '
             f'dominant-baseline="middle" font-size="6" fill="white">{tot}</text>'
+        )
+
+    # Prediction: dashed circle right of solid total on today's row
+    # Stroke width encodes uncertainty: thicker = larger σ
+    if is_today_row:
+        i_today = days.index(cutoff_date)
+        yc_today = ypx(i_today)
+        pred_cx = DOT_COL_X + 10
+        pred_r = dot_r(int(round(pred_total)))
+        sw = max(0.5, min(3.5, pred_sigma * 0.75))
+        o.append(
+            f'<circle cx="{pred_cx:.0f}" cy="{yc_today:.1f}" r="{pred_r:.1f}" '
+            f'fill="none" stroke="{DAY_DOT_COLOR}" stroke-width="{sw:.1f}" '
+            f'stroke-dasharray="2,2"/>'
+        )
+        o.append(
+            f'<text x="{pred_cx:.0f}" y="{yc_today:.1f}" text-anchor="middle" '
+            f'dominant-baseline="middle" font-size="6" fill="{DAY_DOT_COLOR}">'
+            f'~{pred_total:.0f}</text>'
         )
 
     # Title + subtitle

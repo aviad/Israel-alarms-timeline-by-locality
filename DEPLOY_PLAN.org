@@ -20,6 +20,9 @@ All chart requests succeed. CPU ~700ms, memory within 128MB limit.
   - Dots mode: =<circle>= elements scaled by count
   - Total-count column: SVG arc wedge (=_svg_wedge()=) for night/day split
   - Google Fonts EB Garamond via =<style>@import= in SVG; ETBembo local fallback
+- =predict_remaining(times, now, recent_days)= → =(expected, std_dev)=
+  - Linear regression (normal equation), 3 features, pure Python
+  - Backtested MAE 0.71 across 7 areas on Mar 8–9
 - =CITY_TRANSLATIONS= dict — 1627 Hebrew→English city name entries
 - Constants: =DEFAULT_AREA_FILTER=, =DEFAULT_BIN_HOURS=, =DEFAULT_START=,
   =ALARMS_CSV_URL=, =TZEVAADOM_API_URL=, color constants
@@ -227,6 +230,17 @@ Fix: use =_epoch_to_israel(ts)= (explicit UTC → Israel conversion) in =load_ap
 The CSV timestamps are already stored as Israel local time strings, so =strptime= is fine.
 
 * Remaining Work
+
+** "How many more today?" Predictor [DONE — code, needs display]
+- =predict_remaining(times, now, recent_days)= in =alarms_core.py=
+- Pure Python linear regression via normal equation =(XᵀX)⁻¹Xᵀy=
+- 3 features: =hours_remaining=, =alerts_today_so_far=, =recent_rate= (avg/day last 7 days)
+- Training data: each historical (day, hour) pair → target = alerts remaining that day
+- Returns =(expected_remaining, std_dev)=, e.g. ="3.2 ± 1.1"=
+- Backtest on Mar 8–9 across 7 areas: MAE = 0.71, RMSE = 0.84, bias = +0.22
+- Skips first days of war (Feb 28, Mar 1) as outliers — train from Mar 2+
+- No external dependencies (no sklearn, no numpy)
+- TODO: integrate into worker UI (display options TBD)
 
 ** Mobile-Responsive UI [DONE]
 - Added =@media (max-width: 600px)= CSS block: form fields stack vertically,
