@@ -2064,6 +2064,17 @@ def render_chart(
         f'<text x="{icon_x - leg_r - 3:.1f}" y="{leg_y}" text-anchor="end" '
         f'dominant-baseline="middle" font-size="9" fill="{grey}">night/day:</text>'
     )
+    if has_prediction:
+        exp_x = icon_x - 55.0
+        o.append(
+            f'<circle cx="{exp_x:.1f}" cy="{leg_y:.0f}" r="{leg_r:.1f}" '
+            f'fill="none" stroke="{DAY_DOT_COLOR}" stroke-width="1" '
+            f'stroke-dasharray="2,2"/>'
+        )
+        o.append(
+            f'<text x="{exp_x - leg_r - 3:.1f}" y="{leg_y}" text-anchor="end" '
+            f'dominant-baseline="middle" font-size="9" fill="{grey}">expected:</text>'
+        )
     if style == "dots":
         dot_leg_x = icon_x - 100.0
         for cnt, lbl in [(5, "5"), (1, "1")]:
