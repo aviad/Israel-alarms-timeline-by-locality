@@ -1908,7 +1908,7 @@ def render_chart(
     CHART_W = 24 * HOUR_W
     DOT_COL_X = LEFT_MARGIN + CHART_W + 30
     SVG_W = LEFT_MARGIN + CHART_W + 56
-    BOTTOM_MARGIN = 30
+    BOTTOM_MARGIN = 30 + (20 if has_prediction else 0)
     CHART_H = n_days * ROW_H
     SVG_H = TOP_MARGIN + CHART_H + BOTTOM_MARGIN
     NIGHT_BG = "#e2dfd5"
@@ -1921,8 +1921,10 @@ def render_chart(
     def ypx(i: int) -> float:
         return TOP_MARGIN + i * ROW_H + ROW_H / 2
 
+    max_daily = max(daily_totals.values()) if daily_totals else 1
     def dot_r(n: int) -> float:
-        return max(3.0, min(ROW_H * 0.44, math.sqrt(n) * 3.5))
+        # Scale relative to dataset max so dots always differentiate
+        return max(3.0, math.sqrt(n / max_daily) * ROW_H * 0.44)
 
     # ── Build SVG ─────────────────────────────────────────────────────────────
     o: list[str] = []
@@ -2011,8 +2013,7 @@ def render_chart(
         if not tot:
             continue
         yc = ypx(i)
-        # Shift solid circle left on today's row to make room for prediction
-        cx = DOT_COL_X - 10 if (is_today_row and day == cutoff_date) else DOT_COL_X
+        cx = DOT_COL_X
         night_frac = daily_night[day] / tot
         r = dot_r(tot)
         if night_frac <= 0:
@@ -2031,54 +2032,30 @@ def render_chart(
             f'dominant-baseline="middle" font-size="6" fill="white">{tot}</text>'
         )
 
-    # Prediction: three-zone forecast indicator
-    #   1. Center hole: background-colored at dot_r(today_so_far)
-    #   2. Inner gray ring up to dashed line
-    #   3. Dashed circle at expected value
-    #   4. Outer gray ring from dashed line to max
-    # Uses linear scaling (px per alert) so all three zones are visible.
+    # Prediction: +N label right of dot, economist curve below pointing to it
     if is_today_row:
         i_today = days.index(cutoff_date)
         yc_today = ypx(i_today)
-        pred_cx = DOT_COL_X + 10
-        pred_int = int(round(pred_total))
-        pred_max = int(round(pred_total + pred_sigma))
-        # Linear scale: px_per_alert anchored so center matches dot_r
-        r_center = dot_r(today_so_far) if today_so_far > 0 else 1.5
-        px_per = r_center / max(today_so_far, 1) if today_so_far > 0 else 1.5
-        r_expected = r_center + px_per * (pred_int - today_so_far)
-        r_max = r_center + px_per * (pred_max - today_so_far)
-        # Clamp to keep within row height
-        max_r = ROW_H * 0.48
-        if r_max > max_r:
-            scale = (max_r - r_center) / max(r_max - r_center, 0.1)
-            r_expected = r_center + (r_expected - r_center) * scale
-            r_max = max_r
-        ring_color = "#b0b0b0"
-        bg = "#f0ede3"
-        # 4. Outer gray disk (bottom layer)
+        pred_remaining_int = max(0, int(round(pred_remaining)))
+        # +N text just right of the dot
+        lbl_x = DOT_COL_X + dot_r(today_so_far) + 4
         o.append(
-            f'<circle cx="{pred_cx:.0f}" cy="{yc_today:.1f}" r="{r_max:.1f}" '
-            f'fill="{ring_color}" opacity="0.45"/>'
+            f'<text x="{lbl_x:.1f}" y="{yc_today:.1f}" text-anchor="start" '
+            f'dominant-baseline="middle" font-size="7" fill="#555555">'
+            f'+{pred_remaining_int}</text>'
         )
-        # 2. Inner gray already covered by outer disk; punch out center
-        # 1. Center hole
-        o.append(
-            f'<circle cx="{pred_cx:.0f}" cy="{yc_today:.1f}" r="{r_center:.1f}" '
-            f'fill="{bg}"/>'
+        # Economist curve: starts below the +N label, arcs down-left to annotation
+        ax0, ay0 = lbl_x + 4, yc_today + 5
+        ax1, ay1 = DOT_COL_X - 50, SVG_H - 10
+        path = (
+            f'M {ax0:.1f},{ay0:.1f} '
+            f'C {ax0:.1f},{ay0 + 35:.1f} {ax1 + 40:.1f},{ay1:.1f} {ax1:.1f},{ay1:.1f}'
         )
-        # 3. Solid circle at expected
+        o.append(f'<path d="{path}" fill="none" stroke="{grey}" stroke-width="0.6"/>')
         o.append(
-            f'<circle cx="{pred_cx:.0f}" cy="{yc_today:.1f}" r="{r_expected:.1f}" '
-            f'fill="none" stroke="{DAY_DOT_COLOR}" stroke-width="0.5" '
-            f'stroke-dasharray="2,2"/>'
-        )
-        # Label: always inside the inner gray ring, centered between hole and line
-        lbl = f'~{pred_int}'
-        o.append(
-            f'<text x="{pred_cx:.0f}" y="{yc_today:.1f}" text-anchor="middle" '
-            f'dominant-baseline="middle" font-size="6" fill="#555555">'
-            f'{lbl}</text>'
+            f'<text x="{ax1 - 2:.1f}" y="{ay1:.1f}" text-anchor="end" '
+            f'dominant-baseline="middle" font-size="7" font-style="italic" fill="{grey}">'
+            f'today\'s forecast</text>'
         )
 
     # Title + subtitle
@@ -2096,33 +2073,14 @@ def render_chart(
     leg_y = 45.0
     leg_r = 4.5
     icon_x = xpx(24) - 4.0
-    o.append(_svg_wedge(icon_x, leg_y, leg_r, 0.5, 1.0, NIGHT_DOT_COLOR))
-    o.append(_svg_wedge(icon_x, leg_y, leg_r, 0.0, 0.5, DAY_DOT_COLOR))
+    nd_x = icon_x
+    # night/day: to the left of +forecast (or rightmost if no prediction)
+    o.append(_svg_wedge(nd_x, leg_y, leg_r, 0.0, 0.5, NIGHT_DOT_COLOR))
+    o.append(_svg_wedge(nd_x, leg_y, leg_r, 0.5, 1.0, DAY_DOT_COLOR))
     o.append(
-        f'<text x="{icon_x - leg_r - 3:.1f}" y="{leg_y}" text-anchor="end" '
-        f'dominant-baseline="middle" font-size="9" fill="{grey}">night/day:</text>'
+        f'<text x="{nd_x - leg_r - 3:.1f}" y="{leg_y}" text-anchor="end" '
+        f'dominant-baseline="middle" font-size="9" fill="{grey}">day/night:</text>'
     )
-    if has_prediction:
-        exp_x = icon_x - 55.0
-        # Legend: gray ring + dashed circle matching forecast visualization
-        o.append(
-            f'<circle cx="{exp_x:.1f}" cy="{leg_y:.0f}" r="{leg_r + 3:.1f}" '
-            f'fill="#b0b0b0" opacity="0.45"/>'
-        )
-        bg = "#f0ede3"
-        o.append(
-            f'<circle cx="{exp_x:.1f}" cy="{leg_y:.0f}" r="{leg_r - 1.5:.1f}" '
-            f'fill="{bg}"/>'
-        )
-        o.append(
-            f'<circle cx="{exp_x:.1f}" cy="{leg_y:.0f}" r="{leg_r:.1f}" '
-            f'fill="none" stroke="{DAY_DOT_COLOR}" stroke-width="0.5" '
-            f'stroke-dasharray="2,2"/>'
-        )
-        o.append(
-            f'<text x="{exp_x - leg_r - 6:.1f}" y="{leg_y}" text-anchor="end" '
-            f'dominant-baseline="middle" font-size="9" fill="{grey}">forecast:</text>'
-        )
     if style == "dots":
         dot_leg_x = icon_x - 100.0
         for cnt, lbl in [(5, "5"), (1, "1")]:
