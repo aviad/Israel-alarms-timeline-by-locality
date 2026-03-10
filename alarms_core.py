@@ -2073,7 +2073,7 @@ def render_chart(
         )
         o.append(
             f'<text x="{exp_x - leg_r - 3:.1f}" y="{leg_y}" text-anchor="end" '
-            f'dominant-baseline="middle" font-size="9" fill="{grey}">expected:</text>'
+            f'dominant-baseline="middle" font-size="9" fill="{grey}">forecast:</text>'
         )
     if style == "dots":
         dot_leg_x = icon_x - 100.0
