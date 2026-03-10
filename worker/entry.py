@@ -184,13 +184,14 @@ def _build_landing_html() -> str:
       const opt = e.target.closest('.combo-opt');
       if (!opt) return;
       e.preventDefault();
-      hidden.value = inp.value = opt.dataset.v;
+      hidden.value = opt.dataset.v;
+      inp.value = opt.dataset.v || 'כל האזורים / Israel';
       drop.style.display = 'none';
     }});
 
     inp.addEventListener('blur', () => setTimeout(() => {{
       drop.style.display = 'none';
-      if (inp.value === '') inp.value = hidden.value;
+      if (inp.value === '') inp.value = hidden.value || 'כל האזורים / Israel';
     }}, 200));
 
     function submitChart() {{
@@ -201,7 +202,7 @@ def _build_landing_html() -> str:
       e.preventDefault();
       const fd = new FormData(this);
       const params = new URLSearchParams();
-      for (const [k, v] of fd.entries()) if (v) params.set(k, v);
+      for (const [k, v] of fd.entries()) params.set(k, v);
       history.pushState(null, '', '?' + params);
       const wrap = document.getElementById('chart-wrap');
       wrap.innerHTML = '<p style="color:#888">Generating chart…</p>';
@@ -321,7 +322,8 @@ def _build_landing_html() -> str:
       if (sp.has('area')) {{
         const a = sp.get('area');
         const entry = CITIES.find(([he]) => he === a);
-        hidden.value = inp.value = entry ? a : '';
+        hidden.value = entry ? a : '';
+        inp.value = entry ? (a || 'כל האזורים / Israel') : '';
       }}
       if (sp.has('start')) document.getElementById('start').value = sp.get('start');
       if (sp.has('style')) {{
@@ -396,9 +398,9 @@ class Default(WorkerEntrypoint):
         if not (path.endswith(".png") or path.endswith(".svg")):
             return Response("Not found", status=404)
 
-        params = parse_qs(url.query)
+        params = parse_qs(url.query, keep_blank_values=True)
         area = (params.get("area", [DEFAULT_AREA_FILTER]) or [DEFAULT_AREA_FILTER])[0]
-        label = (params.get("label", [""]) or [""])[0] or CITY_TRANSLATIONS.get(area, area or "All Areas")
+        label = (params.get("label", [""]) or [""])[0] or CITY_TRANSLATIONS.get(area, area or "Israel")
         start = (params.get("start", [DEFAULT_START]) or [DEFAULT_START])[0]
         style = (params.get("style", ["lines"]) or ["lines"])[0]
         threat = int((params.get("threat", ["0"]) or ["0"])[0])
