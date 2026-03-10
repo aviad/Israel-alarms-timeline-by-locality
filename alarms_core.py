@@ -1897,7 +1897,7 @@ def render_chart(
     pred_remaining, pred_sigma = predict_remaining(times, now=now)
     today_so_far = daily_totals.get(cutoff_date, 0)
     pred_total = today_so_far + pred_remaining
-    has_prediction = pred_remaining > 0 or pred_sigma > 0
+    has_prediction = int(round(pred_total)) > today_so_far
 
     # ── Layout ───────────────────────────────────────────────────────────────
     ROW_H = 20
