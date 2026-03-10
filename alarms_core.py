@@ -1769,13 +1769,19 @@ def predict_remaining(
     recent_counts = [len(by_day.get(d, [])) for d in train_days if window_start <= d < today]
     recent_rate = sum(recent_counts) / max(len(recent_counts), 1)
 
-    x = [1.0, 24 - current_hour, alerts_so_far, recent_rate]
+    hours_left = 24 - current_hour
+    x = [1.0, hours_left, alerts_so_far, recent_rate]
     pred = max(0.0, sum(a * b for a, b in zip(x, beta)))
 
-    # Residual std
+    # Clamp: can't predict more than the hourly rate × hours left
+    hourly_rate = recent_rate / 24
+    pred = min(pred, hours_left * hourly_rate * 2)  # 2× headroom
+
+    # Residual std, scaled down as day closes
     n, p = len(y), len(beta)
     ss = sum((y[i] - sum(X[i][j] * beta[j] for j in range(p))) ** 2 for i in range(n))
     sigma = math.sqrt(ss / max(n - p, 1))
+    sigma = sigma * hours_left / 24  # shrink uncertainty as day closes
 
     return round(pred, 1), round(sigma, 1)
 
