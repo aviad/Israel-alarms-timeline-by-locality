@@ -55,7 +55,7 @@ def _build_landing_html() -> str:
       font-family: inherit; font-size: 1rem;
       padding: 4px 8px; border: 1px solid #ccc;
       background: #faf9f5; border-radius: 3px; min-width: 200px;
-      box-sizing: border-box;
+      box-sizing: border-box; height: 2rem; line-height: 1;
     }}
     .combo {{ position: relative; }}
     .combo-inp {{ width: 100%; box-sizing: border-box; direction: rtl; }}
