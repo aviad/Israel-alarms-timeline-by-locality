@@ -140,6 +140,15 @@ def _build_landing_html() -> str:
       </div>
     </label>
 
+    <label class="field">
+      Threat
+      <div class="radios">
+        <label><input type="radio" name="threat" value="0" checked> Rockets</label>
+        <label><input type="radio" name="threat" value="5"> UAVs</label>
+        <label><input type="radio" name="threat" value="-1"> Both</label>
+      </div>
+    </label>
+
     <button class="go" type="submit">Generate chart</button>
   </form>
 
@@ -330,7 +339,11 @@ def _build_landing_html() -> str:
         const s = sp.get('style');
         document.querySelectorAll('input[name=style]').forEach(r => r.checked = r.value === s);
       }}
-      if (sp.has('area') || sp.has('start') || sp.has('style')) submitChart();
+      if (sp.has('threat')) {{
+        const t = sp.get('threat');
+        document.querySelectorAll('input[name=threat]').forEach(r => r.checked = r.value === t);
+      }}
+      if (sp.has('area') || sp.has('start') || sp.has('style') || sp.has('threat')) submitChart();
     }})();
   </script>
 </body>
