@@ -417,6 +417,7 @@ class Default(WorkerEntrypoint):
         start = (params.get("start", [DEFAULT_START]) or [DEFAULT_START])[0]
         style = (params.get("style", ["lines"]) or ["lines"])[0]
         threat = int((params.get("threat", ["0"]) or ["0"])[0])
+        threat_label = {0: "Rocket alert", 5: "UAV alert", -1: "All threats alert"}.get(threat, "Rocket alert")
         bin_hours = int((params.get("bin_hours", [str(DEFAULT_BIN_HOURS)]) or [str(DEFAULT_BIN_HOURS)])[0])
         try:
             csv_text, _last_mod = await self._fetch_csv()
@@ -429,7 +430,7 @@ class Default(WorkerEntrypoint):
             api_times = load_api_alerts(api_data, area, threat, start, seen_ids)
             times = sorted(times + api_times)
 
-            svg = render_chart(times, label, bin_hours, start, None, style).decode("utf-8")
+            svg = render_chart(times, label, bin_hours, start, None, style, threat_label=threat_label).decode("utf-8")
         except ValueError as exc:
             return Response(str(exc), status=400)
         except Exception as exc:

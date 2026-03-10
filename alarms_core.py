@@ -1854,6 +1854,7 @@ def render_chart(
     data_cutoff: datetime.datetime | None = None,
     style: str = "lines",
     fmt: str = "svg",
+    threat_label: str = "Rocket",
 ) -> bytes:
     """Generate chart and return SVG bytes. Pure Python, no dependencies."""
     if not times:
@@ -2084,7 +2085,7 @@ def render_chart(
     date_range = f"{times[0].strftime('%b %d')} \u2013 {times[-1].strftime('%b %d, %Y')}"
     o.append(
         f'<text x="{xpx(0):.0f}" y="15" font-size="14" font-weight="bold" fill="#222222">'
-        f'Rocket alert frequency \u2014 {area_label}</text>'
+        f'{threat_label} frequency \u2014 {area_label}</text>'
     )
     o.append(
         f'<text x="{xpx(0):.0f}" y="31" font-size="9" fill="{grey}">'
