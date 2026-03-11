@@ -70,6 +70,15 @@ def _build_landing_html() -> str:
     .combo-opt:hover, .combo-opt.hi {{ background: #e8e5db; }}
     .combo-opt .en {{ color: #aaa; font-size: 0.78rem; margin-right: 8px; direction: ltr; display: inline-block; }}
     .radios {{ display: flex; gap: 12px; align-items: center; }}
+    .options-group {{ display: flex; flex-direction: column; gap: 0; }}
+    .option-row {{
+      display: flex; gap: 10px; align-items: center;
+      font-size: 0.9rem; color: #333;
+      padding: 5px 0;
+    }}
+    .option-row + .option-row {{ border-top: 1px solid #e0ddd5; }}
+    .opt-lbl {{ color: #555; min-width: 52px; font-size: 0.9rem; }}
+    .options-group .radios label {{ min-width: 72px; }}
     button.go {{
       font-family: inherit; font-size: 1rem;
       padding: 6px 20px; background: #555; color: #f0ede3;
@@ -87,7 +96,7 @@ def _build_landing_html() -> str:
     @media (max-width: 600px) {{
       body {{ margin: 16px auto; padding: 0 12px; }}
       form {{ gap: 10px; }}
-      label.field {{ width: 100%; min-width: 0; }}
+      label.field, .options-group {{ width: 100%; min-width: 0; }}
       input[type=date], .combo-inp {{ min-width: 0; min-height: 44px; padding: 8px; }}
       .combo-opt {{ padding: 10px 8px; }}
       button.go {{ width: 100%; padding: 12px; font-size: 1.1rem; }}
@@ -132,22 +141,29 @@ def _build_landing_html() -> str:
       <input type="date" name="start" id="start" value="{DEFAULT_START}">
     </label>
 
-    <label class="field">
-      Style
-      <div class="radios">
-        <label><input type="radio" name="style" value="lines" checked> Lines</label>
-        <label><input type="radio" name="style" value="dots"> Dots</label>
+    <div class="options-group">
+      <div class="option-row">
+        <span class="opt-lbl">Style</span>
+        <div class="radios">
+          <label><input type="radio" name="style" value="lines" checked> Lines</label>
+          <label><input type="radio" name="style" value="dots"> Dots</label>
+        </div>
       </div>
-    </label>
-
-    <label class="field">
-      Threat
-      <div class="radios">
-        <label><input type="radio" name="threat" value="0" checked> Rockets</label>
-        <label><input type="radio" name="threat" value="5"> UAVs</label>
-        <label><input type="radio" name="threat" value="-1"> Both</label>
+      <div class="option-row">
+        <span class="opt-lbl">Threat</span>
+        <div class="radios">
+          <label><input type="radio" name="threat" value="0" checked> Rockets</label>
+          <label><input type="radio" name="threat" value="5"> UAVs</label>
+          <label><input type="radio" name="threat" value="-1"> Both</label>
+        </div>
       </div>
-    </label>
+      <div class="option-row">
+        <span class="opt-lbl">Forecast</span>
+        <div class="radios">
+          <label><input type="checkbox" name="forecast" id="forecast-cb" value="1"> Show estimate</label>
+        </div>
+      </div>
+    </div>
 
     <button class="go" type="submit">Generate chart</button>
   </form>
@@ -212,6 +228,8 @@ def _build_landing_html() -> str:
       const fd = new FormData(this);
       const params = new URLSearchParams();
       for (const [k, v] of fd.entries()) params.set(k, v);
+      // Checkbox: explicitly set 0 when unchecked (FormData omits unchecked boxes)
+      if (!params.has('forecast')) params.set('forecast', '0');
       history.pushState(null, '', '?' + params);
       const wrap = document.getElementById('chart-wrap');
       wrap.innerHTML = '<p style="color:#888">Generating chart…</p>';
@@ -343,7 +361,10 @@ def _build_landing_html() -> str:
         const t = sp.get('threat');
         document.querySelectorAll('input[name=threat]').forEach(r => r.checked = r.value === t);
       }}
-      if (sp.has('area') || sp.has('start') || sp.has('style') || sp.has('threat')) submitChart();
+      if (sp.has('forecast')) {{
+        document.getElementById('forecast-cb').checked = sp.get('forecast') === '1';
+      }}
+      if (sp.has('area') || sp.has('start') || sp.has('style') || sp.has('threat') || sp.has('forecast')) submitChart();
     }})();
   </script>
 </body>
@@ -430,7 +451,8 @@ class Default(WorkerEntrypoint):
             api_times = load_api_alerts(api_data, area, threat, start, seen_ids)
             times = sorted(times + api_times)
 
-            svg = render_chart(times, label, bin_hours, start, None, style, threat_label=threat_label).decode("utf-8")
+            forecast = (params.get("forecast", ["0"]) or ["0"])[0] == "1"
+            svg = render_chart(times, label, bin_hours, start, None, style, threat_label=threat_label, forecast=forecast).decode("utf-8")
         except ValueError as exc:
             return Response(str(exc), status=400)
         except Exception as exc:

@@ -1855,6 +1855,7 @@ def render_chart(
     style: str = "lines",
     fmt: str = "svg",
     threat_label: str = "Rocket",
+    forecast: bool = True,
 ) -> bytes:
     """Generate chart and return SVG bytes. Pure Python, no dependencies."""
     if not times:
@@ -1895,10 +1896,13 @@ def render_chart(
     cutoff_hour = now.hour + now.minute / 60
 
     # ── Prediction for today ──────────────────────────────────────────────────
-    pred_remaining, pred_sigma = predict_remaining(times, now=now)
-    today_so_far = daily_totals.get(cutoff_date, 0)
-    pred_total = today_so_far + pred_remaining
-    has_prediction = int(round(pred_total)) > today_so_far
+    if forecast:
+        pred_remaining, pred_sigma = predict_remaining(times, now=now)
+        today_so_far = daily_totals.get(cutoff_date, 0)
+        pred_total = today_so_far + pred_remaining
+        has_prediction = int(round(pred_total)) > today_so_far
+    else:
+        has_prediction = False
 
     # ── Layout ───────────────────────────────────────────────────────────────
     ROW_H = 20
