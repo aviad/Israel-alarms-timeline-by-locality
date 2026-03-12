@@ -372,6 +372,11 @@ def _build_landing_html() -> str:
       if (sp.has('area') || sp.has('start') || sp.has('style') || sp.has('threat') || sp.has('forecast')) submitChart();
     }})();
   </script>
+  <p style="margin-top:2em;font-size:0.78rem;color:#888;line-height:1.6">
+    Data: <a href="https://github.com/yuval-harpaz/alarms" style="color:#888">yuval-harpaz/alarms</a> ·
+    Forecast model: <a href="https://github.com/ofir-reich/missile-alarms-prediction" style="color:#888">ofir-reich/missile-alarms-prediction</a> ·
+    Chart design inspired by <a href="https://www.edwardtufte.com" style="color:#888">Edward Tufte</a>
+  </p>
 </body>
 </html>"""
 
