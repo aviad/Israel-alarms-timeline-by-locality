@@ -1832,7 +1832,10 @@ def load_api_alerts(
         if gid in seen_ids:
             continue
         for alert in group.get("alerts", []):
-            dt = _epoch_to_israel(alert["time"])
+            ts = alert.get("time")
+            if ts is None:
+                continue
+            dt = _epoch_to_israel(ts)
             if dt < cutoff:
                 continue
             if threat >= 0 and alert.get("threat") != threat:
