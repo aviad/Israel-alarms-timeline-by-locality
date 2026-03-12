@@ -473,9 +473,14 @@ def predict_remaining_ridge(
     x_pred = [1.0] + [float(pred_feats.get(f, 0.0)) for f in FEATURE_COLS]
     raw_pred = sum(a * b for a, b in zip(x_pred, beta))
 
-    # Rate-sub: predicted daily total minus what's already been observed
+    # Blend rate-sub and rate predictions weighted by hours_remaining/24.
+    # rate-sub dominates early (preserves observed momentum),
+    # rate dominates late (decays to near-zero at end of day).
     city_alarms_so_far = cf_pred["city_alarms_so_far"]
-    pred_remaining = max(0.0, raw_pred - city_alarms_so_far)
+    rate_sub = max(0.0, raw_pred - city_alarms_so_far)
+    rate     = max(0.0, raw_pred * hours_remaining / 24)
+    w = hours_remaining / 24
+    pred_remaining = w * rate_sub + (1 - w) * rate
 
     # Residual sigma scaled by hours remaining
     n, p = len(X), len(beta)
