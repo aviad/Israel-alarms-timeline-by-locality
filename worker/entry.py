@@ -165,7 +165,6 @@ def _build_landing_html() -> str:
         <div class="radios">
           <label><input type="radio" name="forecast" value="off" checked> Off</label>
           <label><input type="radio" name="forecast" value="simple"> Simple</label>
-          <label><input type="radio" name="forecast" value="advanced"> Advanced</label>
           <label><input type="radio" name="forecast" value="ridge"> Full model</label>
         </div>
       </div>
