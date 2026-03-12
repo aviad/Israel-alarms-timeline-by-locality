@@ -369,11 +369,10 @@ def _build_landing_html() -> str:
     }})();
   </script>
   <p style="margin-top:2em;font-size:0.78rem;color:#888;line-height:1.6">
-    Data: <a href="https://github.com/yuval-harpaz/alarms" style="color:#888">yuval-harpaz/alarms</a>,
-    <a href="https://www.tzevaadom.co.il/" style="color:#888;font-family:'Alef',sans-serif">צופר - צבע אדום</a> ·
-    App: <a href="https://github.com/aviad/Israel-alarms-timeline-by-locality" style="color:#888">aviad/Israel-alarms-timeline-by-locality</a> ·
-    Forecast model: <a href="https://github.com/ofir-reich/missile-alarms-prediction" style="color:#888">ofir-reich/missile-alarms-prediction</a> ·
-    Chart design inspired by <a href="https://www.edwardtufte.com" style="color:#888">Edward Tufte</a>
+    <span style="white-space:nowrap">Data: <a href="https://github.com/yuval-harpaz/alarms" style="color:#888">yuval-harpaz/alarms</a>, <a href="https://www.tzevaadom.co.il/" style="color:#888;font-family:'Alef',sans-serif">צופר - צבע אדום</a></span> ·
+    <span style="white-space:nowrap">App: <a href="https://github.com/aviad/Israel-alarms-timeline-by-locality" style="color:#888">aviad/Israel-alarms-timeline-by-locality</a></span> ·
+    <span style="white-space:nowrap">Forecast model: <a href="https://github.com/ofir-reich/missile-alarms-prediction" style="color:#888">ofir-reich/missile-alarms-prediction</a></span> ·
+    <span style="white-space:nowrap">Chart design inspired by <a href="https://www.edwardtufte.com" style="color:#888">Edward Tufte</a></span>
   </p>
 </body>
 </html>"""
