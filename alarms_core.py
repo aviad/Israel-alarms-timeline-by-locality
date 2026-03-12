@@ -22,6 +22,7 @@ TZEVAADOM_API_URL = "https://api.tzevaadom.co.il/alerts-history/"
 BG_COLOR = "#f0ede3"
 NIGHT_DOT_COLOR = "#333333"
 DAY_DOT_COLOR = "#888888"
+ROCKET_DESC = "ירי רקטות וטילים"
 # ─────────────────────────────────────────────────────────────────────────────
 
 CITY_TRANSLATIONS = {
@@ -1691,7 +1692,8 @@ def _epoch_to_israel(ts: float) -> datetime.datetime:
 
 # ── Predictor ─────────────────────────────────────────────────────────────────
 # Prediction logic lives in forecast.py; re-export for backward compatibility.
-from forecast import predict_remaining  # noqa: F401, E402
+from forecast import predict_remaining, predict_remaining_ridge  # noqa: F401, E402
+from forecast import _compute_global_features  # noqa: F401, E402
 
 
 def load_alerts(
@@ -1757,6 +1759,95 @@ def load_api_alerts(
     return times
 
 
+def load_alerts_rich(
+    csv_text: str, threat: int, start: str
+) -> tuple[list[dict], set[str]]:
+    """Parse CSV and return (event-level records, seen_ids).
+
+    Unlike load_alerts, no area_filter — all events are returned.
+    Each dict: {time, cities: list[str], event_id, is_rocket}.
+    One dict per unique event_id; all CSV rows for the same event_id are
+    aggregated so that cities contains every city hit in that alert.
+    Filters to origin == "Iran" when that column is present.
+    """
+    cutoff = datetime.datetime.strptime(start, "%Y-%m-%d")
+    seen_ids: set[str] = set()
+    # event_id -> {"time": dt, "cities": [str], "is_rocket": bool}
+    by_event: dict = {}
+
+    reader = csv.DictReader(io.StringIO(csv_text))
+    for row in reader:
+        try:
+            dt = datetime.datetime.strptime(row["time"], "%Y-%m-%d %H:%M:%S")
+        except (ValueError, KeyError):
+            continue
+        if dt < cutoff:
+            continue
+
+        if threat >= 0:
+            try:
+                if int(row["threat"]) != threat:
+                    continue
+            except (ValueError, KeyError):
+                continue
+
+        # Filter to Iran-origin records when origin column exists
+        origin = row.get("origin", "")
+        if origin and origin != "Iran":
+            continue
+
+        event_id = row.get("id", "")
+        city = row.get("cities", "").strip()
+        if not city:
+            continue
+
+        is_rocket = row.get("description", "") == ROCKET_DESC
+
+        if event_id in by_event:
+            by_event[event_id]["cities"].append(city)
+        else:
+            by_event[event_id] = {"time": dt, "cities": [city], "is_rocket": is_rocket}
+            seen_ids.add(event_id)
+
+    records = [
+        {"time": data["time"], "cities": data["cities"], "event_id": eid, "is_rocket": data["is_rocket"]}
+        for eid, data in by_event.items()
+    ]
+    return records, seen_ids
+
+
+def load_api_alerts_rich(
+    api_data: list[dict], threat: int, start: str, seen_ids: set[str]
+) -> list[dict]:
+    """Return event-level records from API data not already in seen_ids.
+
+    Each dict: {time, cities: list[str], event_id, is_rocket}. No area_filter.
+    """
+    cutoff = datetime.datetime.strptime(start, "%Y-%m-%d")
+    records: list[dict] = []
+    for group in api_data:
+        gid = str(group["id"])
+        if gid in seen_ids:
+            continue
+        for alert in group.get("alerts", []):
+            ts = alert.get("time")
+            if ts is None:
+                continue
+            dt = _epoch_to_israel(ts)
+            if dt < cutoff:
+                continue
+            if threat >= 0 and alert.get("threat") != threat:
+                continue
+            cities = alert.get("cities", [])
+            if not cities:
+                continue
+            is_rocket = alert.get("threat") == 0
+            seen_ids.add(gid)
+            records.append({"time": dt, "cities": list(cities), "event_id": gid, "is_rocket": is_rocket})
+            break  # one alert per group (same convention as load_api_alerts)
+    return records
+
+
 def render_chart(
     times: list[datetime.datetime],
     area_label: str,
@@ -1767,6 +1858,9 @@ def render_chart(
     fmt: str = "svg",
     threat_label: str = "Rocket",
     forecast: str = "off",
+    all_records: list[dict] | None = None,
+    city_filter: str | None = None,
+    global_features_cache: dict | None = None,
 ) -> bytes:
     """Generate chart and return SVG bytes. Pure Python, no dependencies."""
     if not times:
@@ -1807,7 +1901,19 @@ def render_chart(
     cutoff_hour = now.hour + now.minute / 60
 
     # ── Prediction for today ──────────────────────────────────────────────────
-    if forecast != "off":
+    if forecast == "ridge":
+        if city_filter and all_records is not None:
+            pred_remaining, pred_sigma = predict_remaining_ridge(
+                all_records, city_filter, now=now,
+                global_features_cache=global_features_cache,
+            )
+        else:
+            # TODO: all-areas ridge forecast; fall back to advanced for now
+            pred_remaining, pred_sigma = predict_remaining(times, now=now, method="advanced")
+        today_so_far = daily_totals.get(cutoff_date, 0)
+        pred_total = today_so_far + pred_remaining
+        has_prediction = int(round(pred_total)) > today_so_far
+    elif forecast != "off":
         pred_remaining, pred_sigma = predict_remaining(
             times, now=now, method=forecast
         )

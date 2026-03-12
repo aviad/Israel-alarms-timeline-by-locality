@@ -23,8 +23,11 @@ from alarms_core import (
     TZEVAADOM_API_URL,
     load_alerts,
     load_api_alerts,
+    load_alerts_rich,
+    load_api_alerts_rich,
     render_chart,
 )
+from forecast import _compute_global_features, _now_israel
 
 
 def _build_landing_html() -> str:
@@ -163,6 +166,7 @@ def _build_landing_html() -> str:
           <label><input type="radio" name="forecast" value="off" checked> Off</label>
           <label><input type="radio" name="forecast" value="simple"> Simple</label>
           <label><input type="radio" name="forecast" value="advanced"> Advanced</label>
+          <label><input type="radio" name="forecast" value="ridge"> Full model</label>
         </div>
       </div>
     </div>
@@ -444,19 +448,48 @@ class Default(WorkerEntrypoint):
         bin_hours = int((params.get("bin_hours", [str(DEFAULT_BIN_HOURS)]) or [str(DEFAULT_BIN_HOURS)])[0])
         try:
             csv_text, _last_mod = await self._fetch_csv()
-            times, seen_ids = load_alerts(csv_text, area, threat, start)
 
             try:
                 api_data = await self._fetch_api_data()
             except Exception:
                 api_data = []
+
+            forecast = (params.get("forecast", ["off"]) or ["off"])[0]
+            if forecast not in ("off", "simple", "advanced", "ridge"):
+                forecast = "off"
+
+            # Display loading (area-filtered, deduplicated per event)
+            times, seen_ids = load_alerts(csv_text, area, threat, start)
             api_times = load_api_alerts(api_data, area, threat, start, seen_ids)
             times = sorted(times + api_times)
 
-            forecast = (params.get("forecast", ["off"]) or ["off"])[0]
-            if forecast not in ("off", "simple", "advanced"):
-                forecast = "off"
-            svg = render_chart(times, label, bin_hours, start, None, style, threat_label=threat_label, forecast=forecast).decode("utf-8")
+            # Rich loading and global features cache (only for ridge forecast)
+            all_records = None
+            global_feats = None
+            if forecast == "ridge":
+                all_records, rich_seen_ids = load_alerts_rich(csv_text, threat, start)
+                api_rich = load_api_alerts_rich(api_data, threat, start, rich_seen_ids)
+                all_records = all_records + api_rich
+
+                _now = _now_israel()
+                _gf_key = "global_features:v1"
+                _gf_cached = await self.env.CACHE.get(_gf_key)
+                if _gf_cached:
+                    global_feats = json.loads(_gf_cached)
+                else:
+                    global_feats = _compute_global_features(all_records, _now)
+                    await self.env.CACHE.put(
+                        _gf_key, json.dumps(global_feats),
+                        to_js({"expirationTtl": 30 * 60})
+                    )
+
+            svg = render_chart(
+                times, label, bin_hours, start, None, style,
+                threat_label=threat_label, forecast=forecast,
+                all_records=all_records if forecast == "ridge" else None,
+                city_filter=area if forecast == "ridge" else None,
+                global_features_cache=global_feats,
+            ).decode("utf-8")
         except ValueError as exc:
             return Response(str(exc), status=400)
         except Exception as exc:

@@ -33,6 +33,8 @@ from alarms_core import (
     TZEVAADOM_API_URL,
     load_alerts,
     load_api_alerts,
+    load_alerts_rich,
+    load_api_alerts_rich,
     render_chart,
 )
 
@@ -90,9 +92,9 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--forecast",
-        choices=["off", "simple", "advanced"],
+        choices=["off", "simple", "advanced", "ridge"],
         default="off",
-        help="Forecast method: off, simple (direct regression), advanced (rate-sub)",
+        help="Forecast method: off, simple (direct), advanced (rate-sub), ridge (34-feature Ridge)",
     )
     return p.parse_args()
 
@@ -165,21 +167,32 @@ if __name__ == "__main__":
         args.label = CITY_TRANSLATIONS.get(args.area, args.area or "All Areas")
 
     csv_text, data_cutoff = fetch_csv()
-    times, seen_ids = load_alerts(csv_text, args.area, args.threat, args.start)
     try:
         api_data = fetch_api_data()
     except Exception:
         print("Fetching latest alarms failed")
         api_data = []
+
+    times, seen_ids = load_alerts(csv_text, args.area, args.threat, args.start)
     api_times = load_api_alerts(api_data, args.area, args.threat, args.start, seen_ids)
     if api_times:
         print(f"  +{len(api_times)} alerts from tzevaadom API.")
     times = sorted(times + api_times)
     print(f"Matched {len(times)} alerts for '{args.label}' (since {args.start}).")
 
+    # Rich loading for ridge forecast (all cities, needed for global features)
+    all_records = None
+    if args.forecast == "ridge":
+        all_records, rich_seen = load_alerts_rich(csv_text, args.threat, args.start)
+        api_rich = load_api_alerts_rich(api_data, args.threat, args.start, rich_seen)
+        all_records = all_records + api_rich
+        print(f"Rich load: {len(all_records)} city-records for ridge forecast.")
+
     svg_bytes = render_chart(
         times, args.label, args.bin_hours, args.start, data_cutoff, args.style,
         forecast=args.forecast,
+        all_records=all_records,
+        city_filter=args.area if args.forecast == "ridge" else None,
     )
 
     output = pathlib.Path(args.output)
