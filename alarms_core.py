@@ -1791,11 +1791,6 @@ def load_alerts_rich(
             except (ValueError, KeyError):
                 continue
 
-        # Filter to Iran-origin records when origin column exists
-        origin = row.get("origin", "")
-        if origin and origin != "Iran":
-            continue
-
         event_id = row.get("id", "")
         city = row.get("cities", "").strip()
         if not city:
