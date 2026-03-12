@@ -1690,100 +1690,8 @@ def _epoch_to_israel(ts: float) -> datetime.datetime:
 
 
 # ── Predictor ─────────────────────────────────────────────────────────────────
-
-
-def _solve_normal_equation(X: list[list[float]], y: list[float]) -> list[float]:
-    """Solve (XᵀX)⁻¹Xᵀy for linear regression. X must include bias column."""
-    n, p = len(X), len(X[0])
-    XtX = [[sum(X[k][i] * X[k][j] for k in range(n)) for j in range(p)] for i in range(p)]
-    Xty = [sum(X[k][i] * y[k] for k in range(n)) for i in range(p)]
-    # Gauss-Jordan inversion
-    aug = [XtX[i][:] + [1.0 if i == j else 0.0 for j in range(p)] for i in range(p)]
-    for col in range(p):
-        max_row = max(range(col, p), key=lambda r: abs(aug[r][col]))
-        aug[col], aug[max_row] = aug[max_row], aug[col]
-        pivot = aug[col][col]
-        if abs(pivot) < 1e-12:
-            return [0.0] * p  # singular — return zeros (no prediction)
-        for j in range(2 * p):
-            aug[col][j] /= pivot
-        for row in range(p):
-            if row != col:
-                f = aug[row][col]
-                for j in range(2 * p):
-                    aug[row][j] -= f * aug[col][j]
-    inv = [aug[i][p:] for i in range(p)]
-    return [sum(inv[i][j] * Xty[j] for j in range(p)) for i in range(p)]
-
-
-def predict_remaining(
-    times: list[datetime.datetime],
-    now: datetime.datetime | None = None,
-    recent_days: int = 7,
-) -> tuple[float, float]:
-    """Predict how many alerts remain today after *now*.
-
-    Uses linear regression with 3 features:
-      hours_remaining, alerts_today_so_far, recent_rate (avg/day last N days).
-    Trained on historical (day, hour) pairs from *times*.
-
-    Returns (expected_remaining, std_dev).
-    Returns (0.0, 0.0) if insufficient data.
-    """
-    if now is None:
-        _utc = datetime.datetime.utcnow()
-        now = _utc + datetime.timedelta(hours=_israel_utc_offset(_utc))
-
-    today = now.date()
-    current_hour = now.hour
-
-    # Group by day
-    by_day: dict[datetime.date, list[datetime.datetime]] = {}
-    for t in times:
-        by_day.setdefault(t.date(), []).append(t)
-
-    all_days = sorted(by_day.keys())
-    train_days = [d for d in all_days if d < today]
-    if len(train_days) < 2:
-        return 0.0, 0.0
-
-    # Build training data
-    X, y = [], []
-    for day in train_days:
-        day_times = by_day[day]
-        day_total = len(day_times)
-        window_start = day - datetime.timedelta(days=recent_days)
-        recent_counts = [len(by_day.get(d, [])) for d in train_days if window_start <= d < day]
-        recent_rate = sum(recent_counts) / max(len(recent_counts), 1)
-        for hour in range(24):
-            so_far = sum(1 for t in day_times if t.hour < hour)
-            X.append([1.0, 24 - hour, so_far, recent_rate])
-            y.append(day_total - so_far)
-
-    beta = _solve_normal_equation(X, y)
-
-    # Features for now
-    today_times = by_day.get(today, [])
-    alerts_so_far = sum(1 for t in today_times if t.hour < current_hour)
-    window_start = today - datetime.timedelta(days=recent_days)
-    recent_counts = [len(by_day.get(d, [])) for d in train_days if window_start <= d < today]
-    recent_rate = sum(recent_counts) / max(len(recent_counts), 1)
-
-    hours_left = 24 - current_hour
-    x = [1.0, hours_left, alerts_so_far, recent_rate]
-    pred = max(0.0, sum(a * b for a, b in zip(x, beta)))
-
-    # Clamp: can't predict more than the hourly rate × hours left
-    hourly_rate = recent_rate / 24
-    pred = min(pred, hours_left * hourly_rate * 2)  # 2× headroom
-
-    # Residual std, scaled down as day closes
-    n, p = len(y), len(beta)
-    ss = sum((y[i] - sum(X[i][j] * beta[j] for j in range(p))) ** 2 for i in range(n))
-    sigma = math.sqrt(ss / max(n - p, 1))
-    sigma = sigma * hours_left / 24  # shrink uncertainty as day closes
-
-    return round(pred, 1), round(sigma, 1)
+# Prediction logic lives in forecast.py; re-export for backward compatibility.
+from forecast import predict_remaining  # noqa: F401, E402
 
 
 def load_alerts(
@@ -1858,7 +1766,7 @@ def render_chart(
     style: str = "lines",
     fmt: str = "svg",
     threat_label: str = "Rocket",
-    forecast: bool = True,
+    forecast: str = "off",
 ) -> bytes:
     """Generate chart and return SVG bytes. Pure Python, no dependencies."""
     if not times:
@@ -1899,8 +1807,10 @@ def render_chart(
     cutoff_hour = now.hour + now.minute / 60
 
     # ── Prediction for today ──────────────────────────────────────────────────
-    if forecast:
-        pred_remaining, pred_sigma = predict_remaining(times, now=now)
+    if forecast != "off":
+        pred_remaining, pred_sigma = predict_remaining(
+            times, now=now, method=forecast
+        )
         today_so_far = daily_totals.get(cutoff_date, 0)
         pred_total = today_so_far + pred_remaining
         has_prediction = int(round(pred_total)) > today_so_far

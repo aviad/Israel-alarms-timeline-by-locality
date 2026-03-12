@@ -88,6 +88,12 @@ def parse_args() -> argparse.Namespace:
         default="lines",
         help="dots: binned scatter (default); lines: narrow tick at exact alert time",
     )
+    p.add_argument(
+        "--forecast",
+        choices=["off", "simple", "advanced"],
+        default="off",
+        help="Forecast method: off, simple (direct regression), advanced (rate-sub)",
+    )
     return p.parse_args()
 
 
@@ -172,7 +178,8 @@ if __name__ == "__main__":
     print(f"Matched {len(times)} alerts for '{args.label}' (since {args.start}).")
 
     svg_bytes = render_chart(
-        times, args.label, args.bin_hours, args.start, data_cutoff, args.style
+        times, args.label, args.bin_hours, args.start, data_cutoff, args.style,
+        forecast=args.forecast,
     )
 
     output = pathlib.Path(args.output)

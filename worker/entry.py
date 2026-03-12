@@ -160,7 +160,9 @@ def _build_landing_html() -> str:
       <div class="option-row">
         <span class="opt-lbl">Forecast</span>
         <div class="radios">
-          <label><input type="checkbox" name="forecast" id="forecast-cb" value="1"> Show estimate</label>
+          <label><input type="radio" name="forecast" value="off" checked> Off</label>
+          <label><input type="radio" name="forecast" value="simple"> Simple</label>
+          <label><input type="radio" name="forecast" value="advanced"> Advanced</label>
         </div>
       </div>
     </div>
@@ -228,8 +230,7 @@ def _build_landing_html() -> str:
       const fd = new FormData(this);
       const params = new URLSearchParams();
       for (const [k, v] of fd.entries()) params.set(k, v);
-      // Checkbox: explicitly set 0 when unchecked (FormData omits unchecked boxes)
-      if (!params.has('forecast')) params.set('forecast', '0');
+      if (!params.has('forecast')) params.set('forecast', 'off');
       history.pushState(null, '', '?' + params);
       const wrap = document.getElementById('chart-wrap');
       wrap.innerHTML = '<p style="color:#888">Generating chart…</p>';
@@ -362,7 +363,8 @@ def _build_landing_html() -> str:
         document.querySelectorAll('input[name=threat]').forEach(r => r.checked = r.value === t);
       }}
       if (sp.has('forecast')) {{
-        document.getElementById('forecast-cb').checked = sp.get('forecast') === '1';
+        const f = sp.get('forecast');
+        document.querySelectorAll('input[name=forecast]').forEach(r => r.checked = r.value === f);
       }}
       if (sp.has('area') || sp.has('start') || sp.has('style') || sp.has('threat') || sp.has('forecast')) submitChart();
     }})();
@@ -451,7 +453,9 @@ class Default(WorkerEntrypoint):
             api_times = load_api_alerts(api_data, area, threat, start, seen_ids)
             times = sorted(times + api_times)
 
-            forecast = (params.get("forecast", ["0"]) or ["0"])[0] == "1"
+            forecast = (params.get("forecast", ["off"]) or ["off"])[0]
+            if forecast not in ("off", "simple", "advanced"):
+                forecast = "off"
             svg = render_chart(times, label, bin_hours, start, None, style, threat_label=threat_label, forecast=forecast).decode("utf-8")
         except ValueError as exc:
             return Response(str(exc), status=400)
