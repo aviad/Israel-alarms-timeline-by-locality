@@ -59,8 +59,9 @@ def _build_landing_html() -> str:
       padding: 4px 8px; border: 1px solid #ccc;
       background: #faf9f5; border-radius: 3px; min-width: 200px;
       box-sizing: border-box; height: 2rem; line-height: 1;
+      -webkit-appearance: none; appearance: none;
     }}
-    .combo {{ position: relative; }}
+    .combo {{ position: relative; height: 2rem; }}
     .combo-inp {{ width: 100%; box-sizing: border-box; direction: rtl; }}
     .combo-drop {{
       display: none; position: absolute; top: 100%; left: 0; right: 0;
@@ -101,6 +102,7 @@ def _build_landing_html() -> str:
       form {{ gap: 10px; }}
       label.field, .options-group {{ width: 100%; min-width: 0; }}
       input[type=date], .combo-inp {{ min-width: 0; min-height: 44px; padding: 8px; }}
+      .combo {{ min-height: 44px; }}
       .combo-opt {{ padding: 10px 8px; }}
       button.go {{ width: 100%; padding: 12px; font-size: 1.1rem; }}
       .dl-btn {{ padding: 6px 14px; font-size: 1rem; }}
