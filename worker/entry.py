@@ -116,7 +116,19 @@ def _build_landing_html() -> str:
     }}
     .dl-btn:hover {{ background: #e8e5db; }}
     .dl-btn:disabled {{ opacity: 0.6; cursor: default; }}
-    #pred-box {{ margin: 0.6em 0 0.2em; font-size: 0.88rem; color: #555; font-style: italic; }}
+    #pred-box {{ margin: 0.8em 0 0.4em; }}
+    .pred-C {{
+      display: inline-flex; align-items: center; gap: 14px;
+      background: #faf9f5; border: 1px solid #ccc;
+      border-radius: 4px; padding: 8px 18px;
+      font-style: normal;
+    }}
+    .pred-C .pred-num {{
+      font-size: 2.2rem; font-weight: bold; line-height: 1;
+      color: #5c4b3a;
+    }}
+    .pred-C .pred-meta {{ font-size: 0.85rem; color: #555; }}
+    .pred-C .pred-meta .pred-range {{ font-size: 0.78rem; color: #888; }}
     .copy-overlay {{
       position: absolute; top: 8px; right: 8px; z-index: 10;
       opacity: 0.55; padding: 4px 8px;
@@ -236,12 +248,13 @@ def _build_landing_html() -> str:
       if (!params.has('forecast')) params.set('forecast', 'off');
       history.pushState(null, '', '?' + params);
       const wrap = document.getElementById('chart-wrap');
+      document.getElementById('pred-box').innerHTML = '';
       wrap.innerHTML = '<p style="color:#888">Generating chart…</p>';
       fetch('/chart.svg?' + params).then(r => {{
         if (!r.ok) return r.text().then(t => {{ throw new Error(t); }});
         return r.text();
       }}).then(svgText => {{
-        const match = svgText.match(/<desc id="pred-data">([^<]*)<\/desc>/);
+        const match = svgText.match(/<desc id="pred-data">([^<]*)<[/]desc>/);
         const box = document.getElementById('pred-box');
         if (match) {{
           const [remS, sigS, lbl] = match[1].split('|');
@@ -250,7 +263,15 @@ def _build_landing_html() -> str:
           const lo = Math.max(0, Math.round(rem - sig));
           const hi = Math.round(rem + sig);
           const when = lbl.startsWith('tonight') ? 'tonight (until 7am)' : 'today';
-          box.innerHTML = `We estimate <strong>~${{N}}</strong> more alerts ${{when}} \u2014 range ${{lo}}\u2013${{hi}}`;
+          const numStr = N === 0 ? '0' : `~${{N}}`;
+          const metaStr = N === 0 ? `no more alerts forecasted ${{when}}` : `more alerts forecasted ${{when}}`;
+          const rangeStr = (lo === 0 && hi === 0) ? '' : `<span class="pred-range">range ${{lo}}\u2013${{hi}}</span>`;
+          box.innerHTML = `
+            <div class="pred-C">
+              <div class="pred-num">${{numStr}}</div>
+              <div class="pred-meta">${{metaStr}}<br>${{rangeStr}}</div>
+            </div>
+          `;
         }} else {{
           box.innerHTML = '';
         }}
@@ -278,14 +299,14 @@ def _build_landing_html() -> str:
               for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
               return btoa(s);
             }}
-            const fontUrls = [...new Set([...css.matchAll(/url\((https:\/\/[^)]+)\)/g)].map(m => m[1]))];
+            const fontUrls = [...new Set([...css.matchAll(/url[(](https:[/][/][^)]+)[)]/g)].map(m => m[1]))];
             let embCss = css;
             for (const u of fontUrls) {{
               const buf = await fetch(u).then(r => r.arrayBuffer());
               const mime = u.includes('.woff2') ? 'font/woff2' : 'font/woff';
               embCss = embCss.split(u).join('data:' + mime + ';base64,' + toB64(buf));
             }}
-            modSvg = svgText.replace(/@import url\([^)]+\);?/, embCss);
+            modSvg = svgText.replace(/@import url[(][^)]+[)];?/, embCss);
           }} catch(e) {{ /* fall back to original SVG; fonts may not render */ }}
           return new Promise((resolve, reject) => {{
             const blobUrl = URL.createObjectURL(new Blob([modSvg], {{type: 'image/svg+xml'}}));
