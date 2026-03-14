@@ -1857,6 +1857,7 @@ def render_chart(
     all_records: list[dict] | None = None,
     city_filter: str | None = None,
     global_features_cache: dict | None = None,
+    now: datetime.datetime | None = None,
 ) -> bytes:
     """Generate chart and return SVG bytes. Pure Python, no dependencies."""
     if not times:
@@ -1891,8 +1892,9 @@ def render_chart(
     for t in times:
         times_by_day.setdefault(t.date(), []).append(t)
 
-    _utc = datetime.datetime.utcnow()
-    now = _utc + datetime.timedelta(hours=_israel_utc_offset(_utc))
+    if now is None:
+        _utc = datetime.datetime.utcnow()
+        now = _utc + datetime.timedelta(hours=_israel_utc_offset(_utc))
     cutoff_date = now.date()
     cutoff_hour = now.hour + now.minute / 60
 
@@ -2066,31 +2068,54 @@ def render_chart(
             f'dominant-baseline="middle" font-size="6" fill="white">{tot}</text>'
         )
 
-    # Prediction: +N label right of dot, economist curve below pointing to it
+    # Prediction: +N label + economist curve
     if is_today_row:
         i_today = days.index(cutoff_date)
         yc_today = ypx(i_today)
         pred_remaining_int = max(0, int(round(pred_remaining)))
-        # +N text just right of the dot
-        lbl_x = DOT_COL_X + dot_r(today_so_far) + 4
-        o.append(
-            f'<text x="{lbl_x:.1f}" y="{yc_today:.1f}" text-anchor="start" '
-            f'dominant-baseline="middle" font-size="7" fill="#555555">'
-            f'+{pred_remaining_int}</text>'
-        )
-        # Economist curve: starts below the +N label, arcs down-left to annotation
-        ax0, ay0 = lbl_x + 4, yc_today + 5
-        ax1, ay1 = DOT_COL_X - 50, SVG_H - 10
-        path = (
-            f'M {ax0:.1f},{ay0:.1f} '
-            f'C {ax0:.1f},{ay0 + 35:.1f} {ax1 + 40:.1f},{ay1:.1f} {ax1:.1f},{ay1:.1f}'
-        )
-        o.append(f'<path d="{path}" fill="none" stroke="{grey}" stroke-width="0.6"/>')
-        o.append(
-            f'<text x="{ax1 - 2:.1f}" y="{ay1:.1f}" text-anchor="end" '
-            f'dominant-baseline="middle" font-size="7" font-style="italic" fill="{grey}">'
-            f'{_pred_label}</text>'
-        )
+
+        if _night_mode and now.hour < 6:
+            # Midnight–6am: place annotation just before 7am (right side of night zone)
+            nl_x = xpx(6.7)
+            o.append(
+                f'<text x="{nl_x:.1f}" y="{yc_today:.1f}" text-anchor="end" '
+                f'dominant-baseline="middle" font-size="7" fill="#555555">'
+                f'+{pred_remaining_int}</text>'
+            )
+            # Economist curve: start just below the number, arc down-left to label
+            # Label sits at the LEFT of the night zone so the curve never crosses it
+            ax0, ay0 = nl_x, yc_today + 4
+            ax1, ay1 = 172, SVG_H - 10
+            path = (
+                f'M {ax0:.1f},{ay0:.1f} '
+                f'C {ax0:.1f},{ay0 + 35:.1f} {ax1 + 40:.1f},{ay1:.1f} {ax1:.1f},{ay1:.1f}'
+            )
+            o.append(f'<path d="{path}" fill="none" stroke="{grey}" stroke-width="0.6"/>')
+            o.append(
+                f'<text x="{ax1 - 2:.1f}" y="{ay1:.1f}" text-anchor="end" '
+                f'dominant-baseline="middle" font-size="7" font-style="italic" fill="{grey}">'
+                f'{_pred_label}</text>'
+            )
+        else:
+            # Daytime / 8pm–midnight: +N right of totals dot, curve to bottom-right
+            lbl_x = DOT_COL_X + dot_r(today_so_far) + 4
+            o.append(
+                f'<text x="{lbl_x:.1f}" y="{yc_today:.1f}" text-anchor="start" '
+                f'dominant-baseline="middle" font-size="7" fill="#555555">'
+                f'+{pred_remaining_int}</text>'
+            )
+            ax0, ay0 = lbl_x + 4, yc_today + 5
+            ax1, ay1 = DOT_COL_X - 50, SVG_H - 10
+            path = (
+                f'M {ax0:.1f},{ay0:.1f} '
+                f'C {ax0:.1f},{ay0 + 35:.1f} {ax1 + 40:.1f},{ay1:.1f} {ax1:.1f},{ay1:.1f}'
+            )
+            o.append(f'<path d="{path}" fill="none" stroke="{grey}" stroke-width="0.6"/>')
+            o.append(
+                f'<text x="{ax1 - 2:.1f}" y="{ay1:.1f}" text-anchor="end" '
+                f'dominant-baseline="middle" font-size="7" font-style="italic" fill="{grey}">'
+                f'{_pred_label}</text>'
+            )
 
     # Title + subtitle
     date_range = f"{times[0].strftime('%b %d')} \u2013 {times[-1].strftime('%b %d, %Y')}"
