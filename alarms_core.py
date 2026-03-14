@@ -1844,6 +1844,46 @@ def load_api_alerts_rich(
     return records
 
 
+def compute_prediction(
+    times: list[datetime.datetime],
+    all_records: list[dict] | None,
+    city_filter: str | None,
+    forecast: str,
+    global_features_cache: dict | None = None,
+    now: datetime.datetime | None = None,
+) -> tuple[float, float, str] | None:
+    """Compute remaining-alert prediction. Returns (pred_remaining, pred_sigma, label) or None."""
+    if forecast == "off":
+        return None
+    if now is None:
+        _utc = datetime.datetime.utcnow()
+        now = _utc + datetime.timedelta(hours=_israel_utc_offset(_utc))
+
+    _night_mode = forecast == "ridge" and (now.hour >= 20 or now.hour < 6)
+    label = "tonight (until 7am)" if _night_mode else "rest of today (est.)"
+
+    if forecast == "ridge":
+        if city_filter and all_records is not None:
+            if _night_mode and now.hour < 6:
+                rem, sig = predict_night_ridge(
+                    all_records, city_filter, now=now,
+                    global_features_cache=global_features_cache,
+                )
+            elif _night_mode:
+                rem, sig = predict_night_rolling(times, now=now)
+            else:
+                rem, sig = predict_remaining_ridge(
+                    all_records, city_filter, now=now,
+                    global_features_cache=global_features_cache,
+                )
+        else:
+            rem, sig = predict_remaining(times, now=now, method="advanced")
+    else:
+        rem, sig = predict_remaining(times, now=now, method=forecast)
+
+    return rem, sig, label
+
+
 def render_chart(
     times: list[datetime.datetime],
     area_label: str,
@@ -1899,37 +1939,13 @@ def render_chart(
     cutoff_hour = now.hour + now.minute / 60
 
     # ── Prediction for today / tonight ───────────────────────────────────────
-    # Night mode: 8pm–6am → switch label and model.
-    # Backtest result: Ridge beats naive only from midnight+; use rolling avg for 8pm–midnight.
     _night_mode = forecast == "ridge" and (now.hour >= 20 or now.hour < 6)
-    _pred_label = "tonight (until 7am)" if _night_mode else "rest of today (est.)"
-
-    if forecast == "ridge":
-        if city_filter and all_records is not None:
-            if _night_mode and now.hour < 6:
-                # Midnight–6am: Ridge incorporates observed night activity
-                pred_remaining, pred_sigma = predict_night_ridge(
-                    all_records, city_filter, now=now,
-                    global_features_cache=global_features_cache,
-                )
-            elif _night_mode:
-                # 8pm–midnight: rolling average (Ridge underperforms at this horizon)
-                pred_remaining, pred_sigma = predict_night_rolling(times, now=now)
-            else:
-                pred_remaining, pred_sigma = predict_remaining_ridge(
-                    all_records, city_filter, now=now,
-                    global_features_cache=global_features_cache,
-                )
-        else:
-            # all-areas: fall back to advanced for now
-            pred_remaining, pred_sigma = predict_remaining(times, now=now, method="advanced")
-        today_so_far = daily_totals.get(cutoff_date, 0)
-        pred_total = today_so_far + pred_remaining
-        has_prediction = int(round(pred_total)) > today_so_far
-    elif forecast != "off":
-        pred_remaining, pred_sigma = predict_remaining(
-            times, now=now, method=forecast
-        )
+    _pred_result = compute_prediction(
+        times, all_records, city_filter, forecast,
+        global_features_cache=global_features_cache, now=now,
+    )
+    if _pred_result is not None:
+        pred_remaining, pred_sigma, _pred_label = _pred_result
         today_so_far = daily_totals.get(cutoff_date, 0)
         pred_total = today_so_far + pred_remaining
         has_prediction = int(round(pred_total)) > today_so_far

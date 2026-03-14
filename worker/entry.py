@@ -26,6 +26,7 @@ from alarms_core import (
     load_alerts_rich,
     load_api_alerts_rich,
     render_chart,
+    compute_prediction,
 )
 from forecast import _compute_global_features, _now_israel
 
@@ -116,6 +117,13 @@ def _build_landing_html() -> str:
     }}
     .dl-btn:hover {{ background: #e8e5db; }}
     .dl-btn:disabled {{ opacity: 0.6; cursor: default; }}
+    #pred-box {{
+      display: none; margin: 1em 0 0.5em; padding: 0.6em 0;
+      border-top: 1px solid #ddd; border-bottom: 1px solid #ddd;
+    }}
+    #pred-box .pred-number {{ font-size: 2rem; font-weight: bold; color: #222; }}
+    #pred-box .pred-sigma  {{ font-size: 1.1rem; color: #888; }}
+    #pred-box .pred-label  {{ font-size: 1rem; font-style: italic; color: #666; margin-left: 0.4em; }}
     .copy-overlay {{
       position: absolute; top: 8px; right: 8px; z-index: 10;
       opacity: 0.55; padding: 4px 8px;
@@ -171,6 +179,9 @@ def _build_landing_html() -> str:
     <button class="go" type="submit">Generate chart</button>
   </form>
 
+  <div id="pred-box">
+    <span class="pred-number" id="pred-number"></span><span class="pred-sigma" id="pred-sigma"></span><span class="pred-label" id="pred-label"></span>
+  </div>
   <p id="rotate-hint">↻ Rotate to landscape for best view</p>
   <div id="chart-wrap"></div>
 
@@ -237,6 +248,18 @@ def _build_landing_html() -> str:
       wrap.innerHTML = '<p style="color:#888">Generating chart…</p>';
       fetch('/chart.svg?' + params).then(r => {{
         if (!r.ok) return r.text().then(t => {{ throw new Error(t); }});
+        const rem = r.headers.get('X-Pred-Remaining');
+        const sig = r.headers.get('X-Pred-Sigma');
+        const lbl = r.headers.get('X-Pred-Label');
+        const box = document.getElementById('pred-box');
+        if (rem !== null) {{
+          document.getElementById('pred-number').textContent = '+' + rem;
+          document.getElementById('pred-sigma').textContent = ' \u00b1' + sig;
+          document.getElementById('pred-label').textContent = lbl;
+          box.style.display = '';
+        }} else {{
+          box.style.display = 'none';
+        }}
         return r.blob();
       }}).then(blob => {{
         const url = URL.createObjectURL(blob);
@@ -493,15 +516,27 @@ class Default(WorkerEntrypoint):
                 city_filter=area if forecast == "ridge" else None,
                 global_features_cache=global_feats,
             ).decode("utf-8")
+
+            pred_info = compute_prediction(
+                times,
+                all_records if forecast == "ridge" else None,
+                area if forecast == "ridge" else None,
+                forecast,
+                global_features_cache=global_feats,
+            )
         except ValueError as exc:
             return Response(str(exc), status=400)
         except Exception as exc:
             return Response(f"Internal error: {exc}", status=500)
 
-        return Response(
-            svg,
-            headers={
-                "Content-Type": "image/svg+xml; charset=utf-8",
-                "Cache-Control": "public, max-age=120",
-            },
-        )
+        resp_headers = {
+            "Content-Type": "image/svg+xml; charset=utf-8",
+            "Cache-Control": "public, max-age=120",
+        }
+        if pred_info is not None:
+            rem, sig, lbl = pred_info
+            resp_headers["X-Pred-Remaining"] = str(round(rem, 1))
+            resp_headers["X-Pred-Sigma"] = str(round(sig, 1))
+            resp_headers["X-Pred-Label"] = lbl
+
+        return Response(svg, headers=resp_headers)
