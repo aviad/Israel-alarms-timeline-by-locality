@@ -26,7 +26,6 @@ from alarms_core import (
     load_alerts_rich,
     load_api_alerts_rich,
     render_chart,
-    compute_prediction,
 )
 from forecast import _compute_global_features, _now_israel
 
@@ -248,11 +247,12 @@ def _build_landing_html() -> str:
       wrap.innerHTML = '<p style="color:#888">Generating chart…</p>';
       fetch('/chart.svg?' + params).then(r => {{
         if (!r.ok) return r.text().then(t => {{ throw new Error(t); }});
-        const rem = r.headers.get('X-Pred-Remaining');
-        const sig = r.headers.get('X-Pred-Sigma');
-        const lbl = r.headers.get('X-Pred-Label');
+        return r.text();
+      }}).then(svgText => {{
+        const match = svgText.match(/<desc id="pred-data">([^<]*)<\/desc>/);
         const box = document.getElementById('pred-box');
-        if (rem !== null) {{
+        if (match) {{
+          const [rem, sig, lbl] = match[1].split('|');
           document.getElementById('pred-number').textContent = '+' + rem;
           document.getElementById('pred-sigma').textContent = ' \u00b1' + sig;
           document.getElementById('pred-label').textContent = lbl;
@@ -260,8 +260,7 @@ def _build_landing_html() -> str:
         }} else {{
           box.style.display = 'none';
         }}
-        return r.blob();
-      }}).then(blob => {{
+        const blob = new Blob([svgText], {{type: 'image/svg+xml'}});
         const url = URL.createObjectURL(blob);
         const obj = document.createElement('object');
         obj.type = 'image/svg+xml';
@@ -516,27 +515,15 @@ class Default(WorkerEntrypoint):
                 city_filter=area if forecast == "ridge" else None,
                 global_features_cache=global_feats,
             ).decode("utf-8")
-
-            pred_info = compute_prediction(
-                times,
-                all_records if forecast == "ridge" else None,
-                area if forecast == "ridge" else None,
-                forecast,
-                global_features_cache=global_feats,
-            )
         except ValueError as exc:
             return Response(str(exc), status=400)
         except Exception as exc:
             return Response(f"Internal error: {exc}", status=500)
 
-        resp_headers = {
-            "Content-Type": "image/svg+xml; charset=utf-8",
-            "Cache-Control": "public, max-age=120",
-        }
-        if pred_info is not None:
-            rem, sig, lbl = pred_info
-            resp_headers["X-Pred-Remaining"] = str(round(rem, 1))
-            resp_headers["X-Pred-Sigma"] = str(round(sig, 1))
-            resp_headers["X-Pred-Label"] = lbl
-
-        return Response(svg, headers=resp_headers)
+        return Response(
+            svg,
+            headers={
+                "Content-Type": "image/svg+xml; charset=utf-8",
+                "Cache-Control": "public, max-age=120",
+            },
+        )

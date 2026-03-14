@@ -1990,6 +1990,13 @@ def render_chart(
         'text{font-family:ETBembo,"EB Garamond",Georgia,Palatino,serif}'
         '</style>'
     )
+    # Embed prediction for JS to extract (pipe-separated: remaining|sigma|label)
+    if _pred_result is not None:
+        o.append(
+            f'<desc id="pred-data">'
+            f'{round(pred_remaining, 1)}|{round(pred_sigma, 1)}|{_pred_label}'
+            f'</desc>'
+        )
 
     # Night shading bands
     o.append(
