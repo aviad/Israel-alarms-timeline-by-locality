@@ -116,13 +116,7 @@ def _build_landing_html() -> str:
     }}
     .dl-btn:hover {{ background: #e8e5db; }}
     .dl-btn:disabled {{ opacity: 0.6; cursor: default; }}
-    #pred-box {{
-      display: none; margin: 1em 0 0.5em; padding: 0.6em 0;
-      border-top: 1px solid #ddd; border-bottom: 1px solid #ddd;
-    }}
-    #pred-box .pred-number {{ font-size: 2rem; font-weight: bold; color: #222; }}
-    #pred-box .pred-sigma  {{ font-size: 1.1rem; color: #888; }}
-    #pred-box .pred-label  {{ font-size: 1rem; font-style: italic; color: #666; margin-left: 0.4em; }}
+    #pred-box {{ margin: 0.6em 0 0.2em; font-size: 0.88rem; color: #555; font-style: italic; }}
     .copy-overlay {{
       position: absolute; top: 8px; right: 8px; z-index: 10;
       opacity: 0.55; padding: 4px 8px;
@@ -178,9 +172,7 @@ def _build_landing_html() -> str:
     <button class="go" type="submit">Generate chart</button>
   </form>
 
-  <div id="pred-box">
-    <span class="pred-number" id="pred-number"></span><span class="pred-sigma" id="pred-sigma"></span><span class="pred-label" id="pred-label"></span>
-  </div>
+  <div id="pred-box"></div>
   <p id="rotate-hint">↻ Rotate to landscape for best view</p>
   <div id="chart-wrap"></div>
 
@@ -252,13 +244,15 @@ def _build_landing_html() -> str:
         const match = svgText.match(/<desc id="pred-data">([^<]*)<\/desc>/);
         const box = document.getElementById('pred-box');
         if (match) {{
-          const [rem, sig, lbl] = match[1].split('|');
-          document.getElementById('pred-number').textContent = '+' + rem;
-          document.getElementById('pred-sigma').textContent = ' \u00b1' + sig;
-          document.getElementById('pred-label').textContent = lbl;
-          box.style.display = '';
+          const [remS, sigS, lbl] = match[1].split('|');
+          const rem = parseFloat(remS), sig = parseFloat(sigS);
+          const N = Math.round(rem);
+          const lo = Math.max(0, Math.round(rem - sig));
+          const hi = Math.round(rem + sig);
+          const when = lbl.startsWith('tonight') ? 'tonight (until 7am)' : 'today';
+          box.innerHTML = `We estimate <strong>~${{N}}</strong> more alerts ${{when}} \u2014 range ${{lo}}\u2013${{hi}}`;
         }} else {{
-          box.style.display = 'none';
+          box.innerHTML = '';
         }}
         const blob = new Blob([svgText], {{type: 'image/svg+xml'}});
         const url = URL.createObjectURL(blob);
