@@ -403,6 +403,13 @@ def _compute_interaction_features(
     }
 
 
+def _day_start_7am(t: datetime.datetime) -> datetime.date:
+    """Return the 7am-day-start date for time t.
+    Records in [D 07:00, D+1 07:00) belong to 7am-day D.
+    """
+    return t.date() if t.hour >= 7 else (t.date() - datetime.timedelta(days=1))
+
+
 def predict_remaining_ridge(
     all_records: list[dict],
     city: str,
@@ -479,6 +486,151 @@ def predict_remaining_ridge(
     city_alarms_so_far = cf_pred["city_alarms_so_far"]
     rate_sub = max(0.0, raw_pred - city_alarms_so_far)
     rate     = max(0.0, raw_pred * hours_remaining / 24)
+    w = hours_remaining / 24
+    pred_remaining = w * rate_sub + (1 - w) * rate
+
+    # Residual sigma scaled by hours remaining
+    n, p = len(X), len(beta)
+    ss = sum(
+        (y_daily[i] - sum(X[i][j] * beta[j] for j in range(p))) ** 2
+        for i in range(n)
+    )
+    sigma = math.sqrt(ss / max(n - p, 1)) * hours_remaining / 24
+
+    return round(pred_remaining, 1), round(sigma, 1)
+
+
+def predict_night_rolling(
+    times: list[datetime.datetime],
+    now: datetime.datetime | None = None,
+    recent_days: int = 7,
+) -> tuple[float, float]:
+    """Predict remaining night alerts (until 7am) using rolling average.
+
+    Computes rolling mean/std of whole-night (9pm→7am) counts over the last
+    `recent_days` 7am-days, then pro-rates by hours_remaining / 10.0 (the
+    full 9pm→7am window is 10h).
+
+    Returns (expected_remaining, std_dev).
+    """
+    if now is None:
+        now = _now_israel()
+
+    current_day_start = _day_start_7am(now)
+
+    by_7am_day: dict[datetime.date, list[datetime.datetime]] = {}
+    for t in times:
+        by_7am_day.setdefault(_day_start_7am(t), []).append(t)
+
+    past_days = sorted(d for d in by_7am_day if d < current_day_start)
+    if not past_days:
+        return 0.0, 0.0
+
+    # Whole-night count (9pm day_start → 7am day_start+1) for each past day
+    def _whole_night(d: datetime.date) -> int:
+        d1 = d + datetime.timedelta(days=1)
+        return sum(
+            1 for t in by_7am_day.get(d, [])
+            if t >= datetime.datetime(d.year, d.month, d.day, 21)
+        ) + sum(
+            1 for t in by_7am_day.get(d1, [])
+            if t < datetime.datetime(d1.year, d1.month, d1.day, 7)
+        )
+
+    recent = past_days[-recent_days:]
+    night_counts = [float(_whole_night(d)) for d in recent]
+    avg = sum(night_counts) / len(night_counts)
+    variance = sum((c - avg) ** 2 for c in night_counts) / max(len(night_counts) - 1, 1)
+    std = math.sqrt(variance)
+
+    # Pro-rate by hours remaining (whole window = 10h, 9pm–7am)
+    hours_remaining = max(0.0, 24.0 - (now.hour - 7) % 24 - now.minute / 60.0)
+    scale = min(1.0, hours_remaining / 10.0)
+    return round(avg * scale, 1), round(std * scale, 1)
+
+
+def predict_night_ridge(
+    all_records: list[dict],
+    city: str,
+    now: datetime.datetime | None = None,
+    alpha: float = 10.0,
+    global_features_cache: dict | None = None,
+) -> tuple[float, float]:
+    """Predict remaining alarms tonight (until 7am) for *city* using 34-feature Ridge.
+
+    Uses a 7am→7am day boundary.  Triggered at 8pm; re-invocable at any later hour.
+    Training cutoffs: {7, 9, 12, 15, 18, 20} within the 7am–7am window.
+    hours_remaining = 24 - ((now.hour - 7) % 24) - now.minute/60
+
+    Returns (expected_remaining, std_dev).
+    """
+    if now is None:
+        now = _now_israel()
+
+    current_day_start = _day_start_7am(now)
+    CUTOFF_HOURS = (7, 9, 12, 15, 18, 20)
+
+    all_day_starts: set[datetime.date] = {_day_start_7am(r["time"]) for r in all_records}
+    train_days = sorted(d for d in all_day_starts if d < current_day_start)
+
+    if len(train_days) < 2:
+        return 0.0, 0.0
+
+    X: list[list[float]] = []
+    y_daily: list[float] = []
+
+    for date in train_days:
+        # Feature context: all records on dates up to `date` (excludes the overnight
+        # portion on date+1, which is correct — those are future at training cutoff)
+        train_records = [r for r in all_records if r["time"].date() <= date]
+
+        # Target: city's full 7am-day total (includes overnight portion on date+1)
+        city_daily_total = float(sum(
+            1 for r in all_records
+            if _day_start_7am(r["time"]) == date and city in r["cities"]
+        ))
+
+        for cutoff_hour in CUTOFF_HOURS:
+            fake_now = datetime.datetime(date.year, date.month, date.day, cutoff_hour, 0)
+            hours_remaining = float(24 - (cutoff_hour - 7) % 24)
+
+            gf = _compute_global_features(train_records, fake_now)
+            cf = _compute_city_features(train_records, city, fake_now)
+            intf = _compute_interaction_features(gf, cf, hours_remaining)
+
+            row_feats = {**gf, **cf, **intf}
+            X.append([1.0] + [float(row_feats.get(f, 0.0)) for f in FEATURE_COLS])
+            y_daily.append(city_daily_total)
+
+    if len(X) < 5:
+        return 0.0, 0.0
+
+    beta = _solve_normal_equation(X, y_daily, alpha=alpha)
+
+    # hours_remaining in the current 7am-day
+    hours_remaining = max(0.0, 24.0 - (now.hour - 7) % 24 - now.minute / 60.0)
+
+    gf_pred = (
+        global_features_cache
+        if global_features_cache is not None
+        else _compute_global_features(all_records, now)
+    )
+    cf_pred = _compute_city_features(all_records, city, now)
+    intf_pred = _compute_interaction_features(gf_pred, cf_pred, hours_remaining)
+
+    pred_feats = {**gf_pred, **cf_pred, **intf_pred}
+    x_pred = [1.0] + [float(pred_feats.get(f, 0.0)) for f in FEATURE_COLS]
+    raw_pred = sum(a * b for a, b in zip(x_pred, beta))
+
+    # Rate-sub: subtract alarms already seen in this 7am-day (since 7am of current_day_start)
+    city_day_so_far = sum(
+        1 for r in all_records
+        if _day_start_7am(r["time"]) == current_day_start
+        and city in r["cities"]
+        and r["time"] < now
+    )
+    rate_sub = max(0.0, raw_pred - city_day_so_far)
+    rate = max(0.0, raw_pred * hours_remaining / 24)
     w = hours_remaining / 24
     pred_remaining = w * rate_sub + (1 - w) * rate
 

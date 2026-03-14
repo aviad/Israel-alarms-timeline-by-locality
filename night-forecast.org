@@ -1,0 +1,144 @@
+#+title: Nighttime Forecast Feature
+#+subtitle: Implementation plan for night-window alert prediction
+#+date: <2026-03-14 Fri>
+
+* Goal
+
+Extend the forecast system so the prediction label and underlying model
+switch cleanly at 8pm Israel time:
+
+| Time of day       | Model boundary | Label                     |
+|-------------------+----------------+---------------------------|
+| 6am–8pm           | midnight–midnight (current) | "rest of today (est.)" |
+| 8pm–6am           | 7am–7am (new)               | "tonight (until 7am)"  |
+
+At 8pm the current "rest of today" prediction disappears and is replaced
+by "tonight (until 7am)." No overlap period.
+
+As the night progresses (10pm, 1am, 3am …) the same 7am–7am model is
+re-invoked with updated =now=. =hours_remaining= shrinks, rate-sub
+incorporates observed night activity, and the forecast tightens
+automatically — no separate late-night model needed.
+
+* Data Exploration Results (Steps 1–2, completed)
+
+Ran =test_night_forecast.py= across 10 areas, 83 area-night pairs:
+
+| Metric                                  | Value        |
+|-----------------------------------------+--------------|
+| Whole night mean (9pm–7am)              | 1.67         |
+| Whole night zero-nights                 | 16%          |
+| Late night mean (12am–7am)              | 0.99         |
+| Late night zero-nights                  | 45%          |
+| Corr(daytime 7am–8pm → whole night)     | +0.677       |
+| Corr(pre-trigger 5pm–8pm → whole night) | +0.705       |
+| Corr(early night → late night)          | +0.048       |
+| Naive 7-night rolling MAE (whole)       | 1.02         |
+| Rate baseline MAE (whole)               | 1.15         |
+
+Key findings:
+- Strong daytime → night correlation across all areas (mean r ≈ 0.60–0.63)
+- Early night → late night correlation is near zero (r = 0.048)
+- Fri/Sat nights have ~2.7× the alerts of Mon/Sun nights
+- The late-night signal is not predictable at 8pm; re-invocation at midnight
+  with observed data is the correct approach (not a separate model)
+
+* Architecture: The 7am–7am Model
+
+** Why 7am–7am
+
+The current Ridge model (34 features) cannot predict night windows because
+its midnight boundary cuts the night in half. Shifting the boundary to
+7am–7am solves this:
+
+- The night window (9pm–7am) falls at the END of the 7am–7am "day"
+- At 8pm, =hours_remaining = 11=, rate-sub gives 8pm→7am prediction
+- All 34 features computed at 8pm naturally capture daytime intensity —
+  our strongest signal (r = 0.68)
+- =alarm_rate_last_3h= at 8pm ≈ pre-trigger signal (r = 0.76)
+- Re-invocation at any later time (midnight, 2am) automatically
+  incorporates night activity and tightens the forecast
+
+** What changes from the current Ridge model
+
+Only the day-boundary definition. Specifically:
+
+1. *Training data grouping*: group alerts into 7am D → 7am D+1 windows
+   instead of midnight–midnight
+2. *Target*: total alerts in the 7am–7am window (was midnight–midnight)
+3. *Cutoff hours for training*: {7, 9, 12, 15, 18, 20} — span the 7am–7am day
+4. *hours_remaining*: =24 - ((now.hour - 7) % 24)= instead of =24 - now.hour=
+5. *Feature computation*: same 34 features, same functions; =now= is the
+   simulated cutoff within the 7am–7am day
+
+Everything else (Ridge solver, feature functions, rate-sub blending,
+residual sigma scaling) stays identical.
+
+* Implementation Plan
+
+** Step A: Add =predict_night_ridge()= to =forecast.py=
+
+Clone =predict_remaining_ridge()= with these modifications:
+
+1. Add helper =_group_by_day_7am(records)= → dict mapping 7am-day-start
+   date → list of records in that 7am–7am window
+2. Training loop: iterate over 7am–7am days, cutoff hours {7,9,12,15,18,20}
+3. Target: count of events hitting =city= in the 7am–7am window
+4. =hours_remaining= computed relative to 7am boundary
+5. Same =_compute_global_features=, =_compute_city_features=,
+   =_compute_interaction_features= — no changes to feature functions
+6. Same Ridge solve, rate-sub blend, sigma scaling
+7. Returns =(expected_remaining, std_dev)= — same interface
+
+** Step B: Add switchover logic to =render_chart()= in =alarms_core.py=
+
+- Detect current Israel hour
+- If 20 ≤ hour or hour < 6: call =predict_night_ridge()= instead of
+  =predict_remaining_ridge()=
+- Change label from "rest of today (est.)" to "tonight (until 7am)"
+- The prediction number and ± range display in the same chart position
+
+** Step C: Wire into =worker/entry.py=
+
+- Import =predict_night_ridge= from =forecast=
+- Pass to =render_chart()= (or let =render_chart= call it internally)
+- No UI changes beyond the label switch
+
+** Step D: Display for 12am–7am
+
+Two options to prototype (show both, choose later):
+
+1. *Same position, new row*: after midnight the chart starts a new date
+   row; the "tonight (until 7am)" prediction appears at the start of
+   that row, counting down as hours pass
+2. *Annotation on night shading*: overlay the prediction on the darkened
+   12am–7am zone of the chart (subtle text or faint range band)
+
+Both use the same =predict_night_ridge()= re-invoked with current =now=.
+No separate model.
+
+** Step E: Backtest
+
+Extend =test_night_forecast.py= to:
+
+1. For each area and each historical night, simulate calling
+   =predict_night_ridge()= at 8pm with the 7am–7am model
+2. Compare predicted 8pm→7am count vs actual night count
+3. Report MAE, RMSE, bias — must beat naive 7-night rolling MAE of 1.02
+4. Also test re-invocation at midnight: predicted 12am→7am vs actual late count
+   — must beat naive late-night MAE of 0.87
+
+* Decision Criteria
+
+Same as before:
+- If the 7am–7am Ridge model does not beat naive rolling average by >15%
+  MAE, fall back to the rolling average (honest, explainable)
+- Keep everything pure Python, no external deps
+- Must fit within 128MB / 30s CPU on Cloudflare Workers
+
+* Execution Order
+
+1. Step A — implement =predict_night_ridge()=
+2. Step E — backtest it (validates before any UI work)
+3. Steps B+C — wire into chart and worker
+4. Step D — prototype both 12am–7am display options

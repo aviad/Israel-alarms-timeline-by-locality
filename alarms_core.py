@@ -1693,7 +1693,8 @@ def _epoch_to_israel(ts: float) -> datetime.datetime:
 # ── Predictor ─────────────────────────────────────────────────────────────────
 # Prediction logic lives in forecast.py; re-export for backward compatibility.
 from forecast import predict_remaining, predict_remaining_ridge  # noqa: F401, E402
-from forecast import _compute_global_features  # noqa: F401, E402
+from forecast import predict_night_ridge, predict_night_rolling  # noqa: F401, E402
+from forecast import _compute_global_features, _day_start_7am  # noqa: F401, E402
 
 
 def load_alerts(
@@ -1895,15 +1896,30 @@ def render_chart(
     cutoff_date = now.date()
     cutoff_hour = now.hour + now.minute / 60
 
-    # ── Prediction for today ──────────────────────────────────────────────────
+    # ── Prediction for today / tonight ───────────────────────────────────────
+    # Night mode: 8pm–6am → switch label and model.
+    # Backtest result: Ridge beats naive only from midnight+; use rolling avg for 8pm–midnight.
+    _night_mode = forecast == "ridge" and (now.hour >= 20 or now.hour < 6)
+    _pred_label = "tonight (until 7am)" if _night_mode else "rest of today (est.)"
+
     if forecast == "ridge":
         if city_filter and all_records is not None:
-            pred_remaining, pred_sigma = predict_remaining_ridge(
-                all_records, city_filter, now=now,
-                global_features_cache=global_features_cache,
-            )
+            if _night_mode and now.hour < 6:
+                # Midnight–6am: Ridge incorporates observed night activity
+                pred_remaining, pred_sigma = predict_night_ridge(
+                    all_records, city_filter, now=now,
+                    global_features_cache=global_features_cache,
+                )
+            elif _night_mode:
+                # 8pm–midnight: rolling average (Ridge underperforms at this horizon)
+                pred_remaining, pred_sigma = predict_night_rolling(times, now=now)
+            else:
+                pred_remaining, pred_sigma = predict_remaining_ridge(
+                    all_records, city_filter, now=now,
+                    global_features_cache=global_features_cache,
+                )
         else:
-            # TODO: all-areas ridge forecast; fall back to advanced for now
+            # all-areas: fall back to advanced for now
             pred_remaining, pred_sigma = predict_remaining(times, now=now, method="advanced")
         today_so_far = daily_totals.get(cutoff_date, 0)
         pred_total = today_so_far + pred_remaining
@@ -2073,7 +2089,7 @@ def render_chart(
         o.append(
             f'<text x="{ax1 - 2:.1f}" y="{ay1:.1f}" text-anchor="end" '
             f'dominant-baseline="middle" font-size="7" font-style="italic" fill="{grey}">'
-            f'rest of today (est.)</text>'
+            f'{_pred_label}</text>'
         )
 
     # Title + subtitle
