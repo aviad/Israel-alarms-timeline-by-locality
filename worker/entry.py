@@ -74,6 +74,7 @@ def _build_landing_html() -> str:
     .combo-opt:hover, .combo-opt.hi {{ background: #e8e5db; }}
     .combo-opt .en {{ color: #aaa; font-size: 0.78rem; margin-right: 8px; direction: ltr; display: inline-block; }}
     .radios {{ display: flex; gap: 12px; align-items: center; }}
+    .radios input[type=radio] {{ accent-color: #555; }}
     .options-group {{ display: flex; flex-direction: column; gap: 0; }}
     .option-row {{
       display: flex; gap: 10px; align-items: center;
