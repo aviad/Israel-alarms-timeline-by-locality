@@ -240,115 +240,143 @@ def _build_landing_html() -> str:
       document.getElementById('form').dispatchEvent(new Event('submit', {{bubbles: true, cancelable: true}}));
     }}
 
-    document.getElementById('form').addEventListener('submit', function(e) {{
+    document.getElementById('form').addEventListener('submit', async function(e) {{
       e.preventDefault();
       const fd = new FormData(this);
       const params = new URLSearchParams();
       for (const [k, v] of fd.entries()) params.set(k, v);
       if (!params.has('forecast')) params.set('forecast', 'off');
       history.pushState(null, '', '?' + params);
+
       const wrap = document.getElementById('chart-wrap');
-      document.getElementById('pred-box').innerHTML = '';
-      wrap.innerHTML = '<p style="color:#888">Generating chart…</p>';
-      fetch('/chart.svg?' + params).then(r => {{
-        if (!r.ok) return r.text().then(t => {{ throw new Error(t); }});
-        return r.text();
-      }}).then(svgText => {{
+      const predBox = document.getElementById('pred-box');
+      predBox.innerHTML = '';
+      wrap.innerHTML = '';
+
+      // Progress messages shown while phase 1 loads
+      const statusEl = document.createElement('p');
+      statusEl.style.cssText = 'color:#888;margin:0.5em 0';
+      wrap.appendChild(statusEl);
+      const steps = ['Fetching alert history\u2026', 'Loading latest alerts\u2026', 'Drawing chart\u2026'];
+      let stepIdx = 0;
+      statusEl.textContent = steps[0];
+      const stepTimer = setInterval(() => {{
+        if (stepIdx < steps.length - 1) statusEl.textContent = steps[++stepIdx];
+      }}, 900);
+
+      const forecast = params.get('forecast') || 'off';
+      // Phase 1: fetch chart without forecast (fast path)
+      const phase1Params = new URLSearchParams(params);
+      phase1Params.set('forecast', 'off');
+
+      // Mutable SVG state — updated when phase 2 replaces the chart
+      let currentSvgText = '';
+      let currentBlobUrl = null;
+
+      function updatePredBox(svgText) {{
         const match = svgText.match(/<desc id="pred-data">([^<]*)<[/]desc>/);
-        const box = document.getElementById('pred-box');
-        if (match) {{
-          const [remS, sigS, lbl] = match[1].split('|');
-          const rem = parseFloat(remS), sig = parseFloat(sigS);
-          const N = Math.round(rem);
-          const lo = Math.max(0, Math.round(rem - sig));
-          const hi = Math.round(rem + sig);
-          const when = lbl.startsWith('tonight') ? 'tonight (until 7am)' : 'today';
-          const numStr = N === 0 ? '0' : `~${{N}}`;
-          const metaStr = N === 0 ? `no more alerts forecasted ${{when}}` : `more alerts forecasted ${{when}}`;
-          const rangeStr = (lo === 0 && hi === 0) ? '' : `<span class="pred-range">range ${{lo}}\u2013${{hi}}</span>`;
-          box.innerHTML = `
-            <div class="pred-C">
-              <div class="pred-num">${{numStr}}</div>
-              <div class="pred-meta">${{metaStr}}<br>${{rangeStr}}</div>
-            </div>
-          `;
-        }} else {{
-          box.innerHTML = '';
-        }}
-        const blob = new Blob([svgText], {{type: 'image/svg+xml'}});
-        const url = URL.createObjectURL(blob);
+        if (!match) {{ predBox.innerHTML = ''; return; }}
+        const [remS, sigS, lbl] = match[1].split('|');
+        const rem = parseFloat(remS), sig = parseFloat(sigS);
+        const N = Math.round(rem);
+        const lo = Math.max(0, Math.round(rem - sig));
+        const hi = Math.round(rem + sig);
+        const when = lbl.startsWith('tonight') ? 'tonight (until 7am)' : 'today';
+        const numStr = N === 0 ? '0' : `~${{N}}`;
+        const metaStr = N === 0 ? `no more alerts forecasted ${{when}}` : `more alerts forecasted ${{when}}`;
+        const rangeStr = (lo === 0 && hi === 0) ? '' : `<span class="pred-range">range ${{lo}}\u2013${{hi}}</span>`;
+        predBox.innerHTML = `
+          <div class="pred-C">
+            <div class="pred-num">${{numStr}}</div>
+            <div class="pred-meta">${{metaStr}}<br>${{rangeStr}}</div>
+          </div>
+        `;
+      }}
+
+      async function svgToPng(scale) {{
+        let modSvg = currentSvgText;
+        try {{
+          const fontCssUrl = 'https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,700;1,400&display=swap';
+          const css = await fetch(fontCssUrl).then(r => r.text());
+          function toB64(buf) {{
+            const bytes = new Uint8Array(buf);
+            let s = '';
+            for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+            return btoa(s);
+          }}
+          const fontUrls = [...new Set([...css.matchAll(/url[(](https:[/][/][^)]+)[)]/g)].map(m => m[1]))];
+          let embCss = css;
+          for (const u of fontUrls) {{
+            const buf = await fetch(u).then(r => r.arrayBuffer());
+            const mime = u.includes('.woff2') ? 'font/woff2' : 'font/woff';
+            embCss = embCss.split(u).join('data:' + mime + ';base64,' + toB64(buf));
+          }}
+          modSvg = currentSvgText.replace(/@import url[(][^)]+[)];?/, embCss);
+        }} catch(e) {{}}
+        return new Promise((resolve, reject) => {{
+          const blobUrl = URL.createObjectURL(new Blob([modSvg], {{type: 'image/svg+xml'}}));
+          const img = new Image();
+          img.onload = () => {{
+            const canvas = document.createElement('canvas');
+            canvas.width  = (img.naturalWidth  || 800) * scale;
+            canvas.height = (img.naturalHeight || 600) * scale;
+            const ctx = canvas.getContext('2d');
+            ctx.scale(scale, scale);
+            ctx.drawImage(img, 0, 0);
+            URL.revokeObjectURL(blobUrl);
+            canvas.toBlob(resolve, 'image/png');
+          }};
+          img.onerror = reject;
+          img.src = blobUrl;
+        }});
+      }}
+
+      function mkBtn(label, action) {{
+        const b = document.createElement('button');
+        b.className = 'dl-btn';
+        b.innerHTML = label;
+        b.onclick = async () => {{
+          const orig = b.innerHTML;
+          b.disabled = true;
+          try {{ await action(); b.innerHTML = '✓'; }}
+          catch(e) {{ b.innerHTML = '✗'; }}
+          setTimeout(() => {{ b.innerHTML = orig; b.disabled = false; }}, 2000);
+        }};
+        return b;
+      }}
+
+      try {{
+        // ── Phase 1: chart data only, no forecast line ───────────────────────
+        const svgText1 = await fetch('/chart.svg?' + phase1Params).then(r => {{
+          if (!r.ok) return r.text().then(t => {{ throw new Error(t); }});
+          return r.text();
+        }});
+        clearInterval(stepTimer);
+        statusEl.remove();
+
+        currentSvgText = svgText1;
+        currentBlobUrl = URL.createObjectURL(new Blob([currentSvgText], {{type: 'image/svg+xml'}}));
+
         const obj = document.createElement('object');
         obj.type = 'image/svg+xml';
-        obj.data = url;
+        obj.data = currentBlobUrl;
         const chartContainer = document.createElement('div');
         chartContainer.style.cssText = 'position:relative;display:inline-block;';
         chartContainer.appendChild(obj);
         wrap.innerHTML = '';
         wrap.appendChild(chartContainer);
 
-        async function svgToPng(scale) {{
-          const svgText = await blob.text();
-          let modSvg = svgText;
-          try {{
-            // Embed Google Fonts as base64 data URIs so canvas can render them
-            const fontCssUrl = 'https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,700;1,400&display=swap';
-            const css = await fetch(fontCssUrl).then(r => r.text());
-            function toB64(buf) {{
-              const bytes = new Uint8Array(buf);
-              let s = '';
-              for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-              return btoa(s);
-            }}
-            const fontUrls = [...new Set([...css.matchAll(/url[(](https:[/][/][^)]+)[)]/g)].map(m => m[1]))];
-            let embCss = css;
-            for (const u of fontUrls) {{
-              const buf = await fetch(u).then(r => r.arrayBuffer());
-              const mime = u.includes('.woff2') ? 'font/woff2' : 'font/woff';
-              embCss = embCss.split(u).join('data:' + mime + ';base64,' + toB64(buf));
-            }}
-            modSvg = svgText.replace(/@import url[(][^)]+[)];?/, embCss);
-          }} catch(e) {{ /* fall back to original SVG; fonts may not render */ }}
-          return new Promise((resolve, reject) => {{
-            const blobUrl = URL.createObjectURL(new Blob([modSvg], {{type: 'image/svg+xml'}}));
-            const img = new Image();
-            img.onload = () => {{
-              const canvas = document.createElement('canvas');
-              canvas.width  = (img.naturalWidth  || 800) * scale;
-              canvas.height = (img.naturalHeight || 600) * scale;
-              const ctx = canvas.getContext('2d');
-              ctx.scale(scale, scale);
-              ctx.drawImage(img, 0, 0);
-              URL.revokeObjectURL(blobUrl);
-              canvas.toBlob(resolve, 'image/png');
-            }};
-            img.onerror = reject;
-            img.src = blobUrl;
-          }});
-        }}
-
-        function mkBtn(label, action) {{
-          const b = document.createElement('button');
-          b.className = 'dl-btn';
-          b.innerHTML = label;
-          b.onclick = async () => {{
-            const orig = b.innerHTML;
-            b.disabled = true;
-            try {{
-              await action();
-              b.innerHTML = '✓';
-            }} catch(e) {{
-              b.innerHTML = '✗';
-            }}
-            setTimeout(() => {{ b.innerHTML = orig; b.disabled = false; }}, 2000);
-          }};
-          return b;
+        async function doCopy() {{
+          const png = await svgToPng(2);
+          await navigator.clipboard.write([new ClipboardItem({{'image/png': png}})]);
         }}
 
         const dlSvg = document.createElement('a');
         dlSvg.className = 'dl-btn';
-        dlSvg.href = url;
+        dlSvg.href = currentBlobUrl;
         dlSvg.download = 'alarms-chart.svg';
         dlSvg.textContent = '↓ SVG';
+        dlSvg.addEventListener('click', () => {{ dlSvg.href = currentBlobUrl; }});
 
         const bar = document.createElement('div');
         bar.className = 'dl-bar';
@@ -359,10 +387,6 @@ def _build_landing_html() -> str:
           Object.assign(document.createElement('a'), {{href: pu, download: 'alarms-chart.png'}}).click();
           URL.revokeObjectURL(pu);
         }}));
-        async function doCopy() {{
-          const png = await svgToPng(2);
-          await navigator.clipboard.write([new ClipboardItem({{'image/png': png}})]);
-        }}
         bar.appendChild(mkBtn('⎘', doCopy));
 
         const overlayBtn = document.createElement('button');
@@ -377,9 +401,32 @@ def _build_landing_html() -> str:
         }};
         chartContainer.appendChild(overlayBtn);
         wrap.appendChild(bar);
-      }}).catch(err => {{
+
+        // ── Phase 2: full chart with forecast line + pred-data ───────────────
+        if (forecast !== 'off') {{
+          const forecastStatus = document.createElement('p');
+          forecastStatus.style.cssText = 'color:#aaa;font-size:0.82rem;margin:0.4em 0 0';
+          forecastStatus.textContent = 'Computing forecast\u2026';
+          wrap.insertBefore(forecastStatus, wrap.firstChild);
+
+          fetch('/chart.svg?' + params).then(r => {{
+            if (!r.ok) return r.text().then(t => {{ throw new Error(t); }});
+            return r.text();
+          }}).then(svgText2 => {{
+            forecastStatus.remove();
+            currentSvgText = svgText2;
+            const newUrl = URL.createObjectURL(new Blob([currentSvgText], {{type: 'image/svg+xml'}}));
+            URL.revokeObjectURL(currentBlobUrl);
+            currentBlobUrl = newUrl;
+            obj.data = currentBlobUrl;
+            updatePredBox(currentSvgText);
+          }}).catch(() => {{ forecastStatus.remove(); }});
+        }}
+
+      }} catch(err) {{
+        clearInterval(stepTimer);
         wrap.innerHTML = `<p style="color:red">Error: ${{err.message}}</p>`;
-      }});
+      }}
     }});
 
     // Pre-fill form from URL params and auto-generate if any are present
