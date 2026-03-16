@@ -1,0 +1,75 @@
+#+title: Phase 2 Implementation Prompt
+#+date: <2026-03-12>
+
+* Task: Implement Phase 2 — Full 34-feature Ridge regression forecast
+
+*Context*: This is the =alarms-graphs= project at
+=/home/aviadr/Documents/conversations-with-machines/alarms-graphs=.
+Read =ARCHITECTURE.org= first (project instructions require it). Also
+read the plan at =/home/aviadr/.claude/plans/mellow-launching-haven.md=
+— Step 1 is done, implement Step 2.
+
+* Reference implementation (pandas/numpy — need pure-Python port)
+
+- =/home/aviadr/src/self/missile-alarms-prediction/src/features.py= — 34-feature implementations
+- =/home/aviadr/src/self/missile-alarms-prediction/src/model.py= — Ridge rate-sub framing, alpha=10.0
+- =/home/aviadr/src/self/missile-alarms-prediction/src/load_data.py= — data loading, field names
+
+* Key constraints
+
+- Pure Python only — no numpy, pandas, sklearn. Cloudflare Workers (Pyodide), 128MB RAM.
+- All datetimes are naive Israel local time. Use =_israel_utc_offset()= in =forecast.py=, not zoneinfo.
+- CSV columns: =time=, =cities= (multi-city string, semicolon-separated), =id=, =description=, =origin=
+- =ROCKET_DESC = "ירי רקטות וטילים"=, filter =origin == "Iran"= for rich loading.
+- Wave detection: 30-min gap rule. EMA alpha = =1 - 0.5 ** (1/3)=.
+
+* Steps to implement (in order)
+
+** 1. =alarms_core.py= — rich loaders
+
+Add =load_alerts_rich(csv_text, threat, start)= and
+=load_api_alerts_rich(api_data, threat, start, seen_ids)= — no
+area_filter, return all cities as list of dicts ={time, city,
+event_id, is_rocket}=. One dict per city per alert (explode
+multi-city alerts).
+
+** 2. =forecast.py= — feature functions and Ridge predictor
+
+Add pure-Python feature functions:
+
+- =_compute_global_features(records, now)= → dict of 18 features (see plan §2.2)
+- =_compute_city_features(records, city, now)= → dict of 9 features (see plan §2.3)
+- =_compute_interaction_features(global_feats, city_feats, hours_remaining)= → dict of 7 features (see plan §2.4)
+- =predict_remaining_ridge(all_records, city, now=None, alpha=10.0, global_features_cache=None)= → =tuple[float, float]=
+  - Training: for each (historical_day, cutoff_hour in {0,3,6,9,12,15,18,21}): compute 34 features, target = city daily total (rate-sub framing)
+  - Prediction: compute 34 features for =now=, predict daily total, subtract observed
+  - Feature order must be consistent between training and prediction — use a fixed =FEATURE_COLS= list
+
+** 3. =alarms_core.py= — =render_chart= update
+
+Add =all_records=None=, =city_filter=None= params. When
+=forecast="ridge"= and =city_filter= is non-empty, call
+=predict_remaining_ridge=. When =city_filter=""=, fall back to
+="advanced"= with a TODO comment.
+
+** 4. =worker/entry.py= — worker wiring
+
+- Load all records via =load_alerts_rich= + =load_api_alerts_rich=
+- KV-cache global features at key =global_features:v1= with 30-min TTL
+- Pass =all_records= and =city_filter=area= to =render_chart=
+- Add fourth radio: =<label><input type="radio" name="forecast" value="ridge"> Full model</label>=
+- Validate =forecast= against =("off", "simple", "advanced", "ridge")=
+
+** 5. =alarms_graph.py= — CLI update
+
+Add ="ridge"= to =--forecast= choices. Pass =all_records= and
+=city_filter= to =render_chart=.
+
+* Testing
+
+- =uv run alarms_graph.py= (no forecast, should still work)
+- =uv run alarms_graph.py --forecast ridge --area "אשקלון"=
+- Verify "all areas" with =--forecast ridge= falls back gracefully to advanced
+- Test output to =tmp/= (local dir, not =/tmp=)
+
+After implementing and verifying locally, deploy to Cloudflare and commit.

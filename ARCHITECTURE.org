@@ -1,0 +1,114 @@
+#+title: Alarms Graph — Deployment & Architecture
+#+date: <2026-03-16 Sun>
+
+* Status: DEPLOYED AND WORKING ✓
+
+Live at https://alarms-graph.unite-worlds.workers.dev
+
+* Architecture
+
+** =alarms_core.py= — shared pure-Python logic
+- =load_alerts(csv_text, area_filter, threat, start)= → =(times, seen_ids)=
+- =load_api_alerts(api_data, area_filter, threat, start, seen_ids)= → =times=
+- =load_alerts_rich= / =load_api_alerts_rich= — event-level records for Ridge model
+- =render_chart(times, label, bin_hours, start_date, data_cutoff, style, fmt, forecast, all_records, city_filter, ...)= → SVG bytes
+  - Pure SVG string building — no matplotlib/numpy
+  - Tufte-style: EB Garamond font, night shading, lines/dots modes
+  - Forecast annotation: economist-style curved line + label
+  - Night mode (8pm–6am): switches label to "tonight (until 7am)"
+- =compute_prediction(...)= — extracted for header/desc embedding
+- =CITY_TRANSLATIONS= — 1627 Hebrew→English city names
+- Israel DST: =_israel_utc_offset()=, =_epoch_to_israel()= (last Friday of March rule)
+- No external dependencies — pure stdlib
+
+** =forecast.py= — prediction models (pure Python)
+- =predict_remaining(times, now, method)= — "simple" (3-feature linear) or "advanced" (rate-sub blend)
+  - Rate-sub: predict daily total, subtract observed
+  - Blend: w×rate_sub + (1-w)×rate, w=hours_remaining/24
+  - Backtest MAE: blend 1.54, rate-sub 1.81, rate 1.63
+- =predict_remaining_ridge(all_records, city, now, alpha=10)= — 34-feature Ridge regression
+  - Rate-sub framing, 8 cutoff hours × prior days training
+  - Features: wave stats, interaction terms, global/city-level
+- =predict_night_rolling(times, now)= — 7-night rolling average (8pm–midnight fallback)
+- =predict_night_ridge(all_records, city, now)= — 7am–7am Ridge (midnight–6am)
+- Night mode selection: Ridge beats naive by 35% after midnight; rolling average before midnight
+
+** =alarms_graph.py= — CLI wrapper
+- argparse, requests, file-based cache
+- PNG export via cairosvg with embedded ETBembo fonts as base64
+- =--forecast off/simple/advanced/ridge=
+
+** =worker/entry.py= — Cloudflare Worker
+- =WorkerEntrypoint= with =async def fetch(request)=
+- Landing page: Hebrew searchable combobox (1627 cities), date picker, lines/dots, threat filter (rockets/UAVs/both), forecast radio (off/simple/full)
+- Two-phase loading: chart renders immediately, forecast overlaid async
+- Progress messages during load
+- Prediction displayed as stat card above chart + embedded in SVG =<desc id="pred-data">=
+- KV caching: CSV 30-min TTL, API 2-min TTL, global features 30-min TTL
+- CSV pre-filtered to rows ≥ 2026-02-27 (full 122K-row CSV exceeds 128MB)
+- SVG/PNG download buttons, copy icon, PNG rasterized client-side via canvas
+- Mobile-responsive: stacked form, 44px touch targets, scrollable chart, deeplinks
+- Credits footer: yuval-harpaz/alarms, forecast model, Tufte style
+- Deeplinks: URL params auto-populate form and generate chart
+
+** =worker/wrangler.toml=
+#+begin_src toml
+name = "alarms-graph"
+main = "entry.py"
+compatibility_date = "2026-03-08"
+compatibility_flags = ["python_workers"]
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "bacce09fc96f4951a5447b13c8433cb5"
+#+end_src
+
+** Symlinks in =worker/=
+- =alarms_core.py= → =../alarms_core.py=
+- =forecast.py= → =../forecast.py=
+
+* File Structure
+
+#+begin_src
+alarms_core.py        ← pure SVG render, shared logic
+forecast.py           ← prediction models (simple/advanced/ridge/night)
+alarms_graph.py       ← CLI: cairosvg PNG, argparse, cache
+cities.csv            ← city translations source
+
+worker/
+├── entry.py          ← WorkerEntrypoint, KV caching, full UI
+├── wrangler.toml     ← config + KV binding
+├── alarms_core.py    → symlink
+└── forecast.py       → symlink
+#+end_src
+
+* Cloudflare Details
+
+| Item           | Value                                         |
+|----------------+-----------------------------------------------|
+| Account ID     | =7d92b3dd730bfad540919765fdf2c54e=            |
+| Worker name    | =alarms-graph=                                |
+| Live URL       | https://alarms-graph.unite-worlds.workers.dev |
+| KV namespace   | =bacce09fc96f4951a5447b13c8433cb5=            |
+| KV binding     | =CACHE=                                       |
+| Plan           | Workers Paid ($5/mo)                          |
+| Bundle size    | ~80KB gzip                                    |
+
+* Key Constraints
+
+| Resource    | Limit       | Actual        | Notes                      |
+|-------------+-------------+---------------+----------------------------|
+| CPU/request | 30s (paid)  | ~700ms        | Pyodide cold start         |
+| Memory      | 128MB       | OK w/filter   | Full CSV exceeds; filtered |
+| Worker size | 10MB (paid) | ~80KB         | No vendored packages       |
+
+* Lessons Learned
+
+- =WorkerEntrypoint= only (=on_fetch= deprecated since wrangler 4.71.0)
+- =Response(bytes)= → garbled; must decode to =str= first
+- SVG in =<img>= blocks =@import=; use =<object>= instead
+- =zoneinfo= needs =tzdata= in Pyodide; moved to CLI only
+- =datetime.fromtimestamp()= uses system TZ (UTC on Cloudflare); use explicit conversion
+- Israel DST: last *Friday* of March (not Sunday like EU)
+- Canvas sandboxes =<object>= SVGs; must fetch+embed Google Fonts as base64 for PNG export
+- 8pm Ridge forecast overfits with ~14 days training data; rolling average is better fallback
