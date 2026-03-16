@@ -1,8 +1,11 @@
-name = "alarms-graph"
+name = "alarms"
 main = "entry.py"
 compatibility_date = "2026-03-08"
 compatibility_flags = ["python_workers"]
 
+[limits]
+cpu_ms = 45000
+
 [[kv_namespaces]]
 binding = "CACHE"
-id = "bacce09fc96f4951a5447b13c8433cb5"
+id = "b30ee945018a4393b61c52f756fac0f0"

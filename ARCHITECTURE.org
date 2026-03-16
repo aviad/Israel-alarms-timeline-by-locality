@@ -3,7 +3,8 @@
 
 * Status: DEPLOYED AND WORKING ✓
 
-Live at https://alarms-graph.unite-worlds.workers.dev
+Live at https://alarms.metta.workers.dev (current)
+Also at https://alarms-graph.unite-worlds.workers.dev (old account)
 
 * Architecture
 
@@ -103,10 +104,10 @@ worker/
 
 | Item           | Value                                         |
 |----------------+-----------------------------------------------|
-| Account ID     | =7d92b3dd730bfad540919765fdf2c54e=            |
-| Worker name    | =alarms-graph=                                |
-| Live URL       | https://alarms-graph.unite-worlds.workers.dev |
-| KV namespace   | =bacce09fc96f4951a5447b13c8433cb5=            |
+| Account ID     | =e4d4d64090d3c4946b9a40c93eea4995=  |
+| Worker name    | =alarms=                            |
+| Live URL       | https://alarms.metta.workers.dev    |
+| KV namespace   | =b30ee945018a4393b61c52f756fac0f0=  |
 | KV binding     | =CACHE=                                       |
 | Plan           | Workers Paid ($5/mo)                          |
 | Bundle size    | ~80KB gzip                                    |
