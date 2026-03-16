@@ -135,6 +135,16 @@ def _build_landing_html() -> str:
       opacity: 0.55; padding: 4px 8px;
     }}
     .copy-overlay:hover {{ opacity: 1; }}
+    @keyframes ellipsis {{
+      0%   {{ content: ''; }}
+      25%  {{ content: '.'; }}
+      50%  {{ content: '..'; }}
+      75%  {{ content: '...'; }}
+    }}
+    .loading-msg::after {{
+      content: '';
+      animation: ellipsis 2s steps(4, end) infinite;
+    }}
   </style>
 </head>
 <body>
@@ -256,14 +266,15 @@ def _build_landing_html() -> str:
 
       // Progress messages shown while phase 1 loads
       const statusEl = document.createElement('p');
-      statusEl.style.cssText = 'color:#888;margin:0.5em 0';
+      statusEl.style.cssText = 'color:#888;margin:1.2em 0';
+      statusEl.className = 'loading-msg';
       wrap.appendChild(statusEl);
-      const steps = ['Fetching alert history\u2026', 'Loading latest alerts\u2026', 'Drawing chart\u2026'];
+      const steps = ['Fetching alert history', 'Loading latest alerts', 'Drawing chart'];
       let stepIdx = 0;
       statusEl.textContent = steps[0];
       const stepTimer = setInterval(() => {{
         if (stepIdx < steps.length - 1) statusEl.textContent = steps[++stepIdx];
-      }}, 900);
+      }}, 2000);
 
       const forecast = params.get('forecast') || 'off';
       // Phase 1: fetch chart without forecast (fast path)
@@ -279,17 +290,16 @@ def _build_landing_html() -> str:
         if (!match) {{ predBox.innerHTML = ''; return; }}
         const [remS, sigS, lbl] = match[1].split('|');
         const rem = parseFloat(remS), sig = parseFloat(sigS);
+        const when = lbl.startsWith('tonight') ? 'tonight (until 7am)' : 'today';
         const N = Math.round(rem);
+        if (N === 0) {{ predBox.innerHTML = ''; return; }}
         const lo = Math.max(0, Math.round(rem - sig));
         const hi = Math.round(rem + sig);
-        const when = lbl.startsWith('tonight') ? 'tonight (until 7am)' : 'today';
-        const numStr = N === 0 ? '0' : `~${{N}}`;
-        const metaStr = N === 0 ? `no more alerts forecasted ${{when}}` : `more alerts forecasted ${{when}}`;
         const rangeStr = (lo === 0 && hi === 0) ? '' : `<span class="pred-range">range ${{lo}}\u2013${{hi}}</span>`;
         predBox.innerHTML = `
           <div class="pred-C">
-            <div class="pred-num">${{numStr}}</div>
-            <div class="pred-meta">${{metaStr}}<br>${{rangeStr}}</div>
+            <div class="pred-num">~${{N}}</div>
+            <div class="pred-meta">more alerts forecasted ${{when}}<br>${{rangeStr}}</div>
           </div>
         `;
       }}
@@ -406,8 +416,9 @@ def _build_landing_html() -> str:
         // ── Phase 2: full chart with forecast line + pred-data ───────────────
         if (forecast !== 'off') {{
           const forecastStatus = document.createElement('p');
-          forecastStatus.style.cssText = 'color:#aaa;font-size:0.82rem;margin:0.4em 0 0';
-          forecastStatus.textContent = 'Computing forecast\u2026';
+          forecastStatus.style.cssText = 'color:#888;margin:1.2em 0 1.2em';
+          forecastStatus.className = 'loading-msg';
+          forecastStatus.textContent = 'Computing forecast';
           wrap.insertBefore(forecastStatus, wrap.firstChild);
 
           fetch('/chart.svg?' + params).then(r => {{
@@ -583,10 +594,7 @@ class Default(WorkerEntrypoint):
         except Exception as exc:
             return Response(f"Internal error: {exc}", status=500)
 
-        return Response(
-            svg,
-            headers={
-                "Content-Type": "image/svg+xml; charset=utf-8",
-                "Cache-Control": "public, max-age=120",
-            },
-        )
+        return Response(svg, headers={
+            "Content-Type": "image/svg+xml; charset=utf-8",
+            "Cache-Control": "public, max-age=120",
+        })
