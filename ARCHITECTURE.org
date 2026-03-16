@@ -7,19 +7,27 @@ Live at https://alarms-graph.unite-worlds.workers.dev
 
 * Architecture
 
-** =alarms_core.py= — shared pure-Python logic
-- =load_alerts(csv_text, area_filter, threat, start)= → =(times, seen_ids)=
-- =load_api_alerts(api_data, area_filter, threat, start, seen_ids)= → =times=
-- =load_alerts_rich= / =load_api_alerts_rich= — event-level records for Ridge model
+** =alarms_core.py= — shared pure-Python logic (~563 lines, was 2184)
 - =render_chart(times, label, bin_hours, start_date, data_cutoff, style, fmt, forecast, all_records, city_filter, ...)= → SVG bytes
   - Pure SVG string building — no matplotlib/numpy
   - Tufte-style: EB Garamond font, night shading, lines/dots modes
   - Forecast annotation: economist-style curved line + label
   - Night mode (8pm–6am): switches label to "tonight (until 7am)"
 - =compute_prediction(...)= — extracted for header/desc embedding
-- =CITY_TRANSLATIONS= — 1627 Hebrew→English city names
-- Israel DST: =_israel_utc_offset()=, =_epoch_to_israel()= (last Friday of March rule)
+- Re-exports everything from split modules for backward compatibility
 - No external dependencies — pure stdlib
+
+** =city_translations.py= — city name mapping
+- =CITY_TRANSLATIONS= — 1627 Hebrew→English city names
+
+** =israel_time.py= — Israel time utilities
+- =_israel_utc_offset()=, =_epoch_to_israel()= — Israel DST (last Friday of March rule)
+
+** =data_loading.py= — CSV and API loading
+- =load_alerts(csv_text, area_filter, threat, start)= → =(times, seen_ids)=
+- =load_api_alerts(api_data, area_filter, threat, start, seen_ids)= → =times=
+- =load_alerts_rich= / =load_api_alerts_rich= — event-level records for Ridge model
+- =ROCKET_DESC= constant
 
 ** =forecast.py= — prediction models (pure Python)
 - =predict_remaining(times, now, method)= — "simple" (3-feature linear) or "advanced" (rate-sub blend)
@@ -66,20 +74,29 @@ id = "bacce09fc96f4951a5447b13c8433cb5"
 ** Symlinks in =worker/=
 - =alarms_core.py= → =../alarms_core.py=
 - =forecast.py= → =../forecast.py=
+- =city_translations.py= → =../city_translations.py=
+- =israel_time.py= → =../israel_time.py=
+- =data_loading.py= → =../data_loading.py=
 
 * File Structure
 
 #+begin_src
-alarms_core.py        ← pure SVG render, shared logic
+alarms_core.py        ← pure SVG render, shared logic (+ re-exports)
+city_translations.py  ← 1627 Hebrew→English city names
+israel_time.py        ← Israel DST offset + epoch conversion
+data_loading.py       ← CSV/API load functions
 forecast.py           ← prediction models (simple/advanced/ridge/night)
 alarms_graph.py       ← CLI: cairosvg PNG, argparse, cache
 cities.csv            ← city translations source
 
 worker/
-├── entry.py          ← WorkerEntrypoint, KV caching, full UI
-├── wrangler.toml     ← config + KV binding
-├── alarms_core.py    → symlink
-└── forecast.py       → symlink
+├── entry.py               ← WorkerEntrypoint, KV caching, full UI
+├── wrangler.toml          ← config + KV binding
+├── alarms_core.py         → symlink
+├── forecast.py            → symlink
+├── city_translations.py   → symlink
+├── israel_time.py         → symlink
+└── data_loading.py        → symlink
 #+end_src
 
 * Cloudflare Details
