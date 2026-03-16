@@ -398,6 +398,22 @@ def _build_landing_html() -> str:
           Object.assign(document.createElement('a'), {{href: pu, download: 'alarms-chart.png'}}).click();
           URL.revokeObjectURL(pu);
         }}));
+
+        async function doCopy() {{
+          if (typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) {{
+            // Fallback for browsers without image clipboard support (open in new tab)
+            const png = await svgToPng(2);
+            const pu = URL.createObjectURL(png);
+            window.open(pu, '_blank');
+            setTimeout(() => URL.revokeObjectURL(pu), 10000);
+            return;
+          }}
+          // Pass Promise directly to ClipboardItem so clipboard.write() is called
+          // synchronously within the user gesture — required by iOS/mobile browsers.
+          // Awaiting svgToPng() first would break the gesture context.
+          await navigator.clipboard.write([new ClipboardItem({{'image/png': svgToPng(2)}})]);
+        }}
+
         bar.appendChild(mkBtn('⎘', doCopy));
 
         const overlayBtn = document.createElement('button');
