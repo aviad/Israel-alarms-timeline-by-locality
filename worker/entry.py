@@ -377,11 +377,6 @@ def _build_landing_html() -> str:
         wrap.innerHTML = '';
         wrap.appendChild(chartContainer);
 
-        async function doCopy() {{
-          const png = await svgToPng(2);
-          await navigator.clipboard.write([new ClipboardItem({{'image/png': png}})]);
-        }}
-
         const dlSvg = document.createElement('a');
         dlSvg.className = 'dl-btn';
         dlSvg.href = currentBlobUrl;
