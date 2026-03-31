@@ -54,7 +54,8 @@ Also at https://alarms-graph.unite-worlds.workers.dev (old account)
 - Progress messages during load
 - Prediction displayed as stat card above chart + embedded in SVG =<desc id="pred-data">=
 - KV caching: CSV 30-min TTL, API 2-min TTL, global features 30-min TTL
-- CSV pre-filtered to rows ≥ 2026-02-27 (full 122K-row CSV exceeds 128MB)
+- CSV pre-filtered to rows ≥ 2026-02-27 during streaming (full CSV ~13.5MB, filtered ~6.7MB)
+- CSV stored in KV as binary (Uint8Array) — bytes→Uint8Array is 1:1, avoiding the 2× JS UTF-16 expansion that caused OOM at KV.put
 - SVG/PNG download buttons, copy icon, PNG rasterized client-side via canvas
 - Mobile-responsive: stacked form, 44px touch targets, scrollable chart, deeplinks
 - Credits footer: yuval-harpaz/alarms, forecast model, Tufte style
@@ -117,7 +118,7 @@ worker/
 | Resource    | Limit       | Actual        | Notes                      |
 |-------------+-------------+---------------+----------------------------|
 | CPU/request | 30s (paid)  | ~700ms        | Pyodide cold start         |
-| Memory      | 128MB       | OK w/filter   | Full CSV exceeds; filtered |
+| Memory      | 128MB       | OK w/filter   | CSV filtered (~6.7MB); stored as binary to avoid 2× JS string expansion |
 | Worker size | 10MB (paid) | ~80KB         | No vendored packages       |
 
 * Lessons Learned
@@ -130,3 +131,5 @@ worker/
 - Israel DST: last *Friday* of March (not Sunday like EU)
 - Canvas sandboxes =<object>= SVGs; must fetch+embed Google Fonts as base64 for PNG export
 - 8pm Ridge forecast overfits with ~14 days training data; rolling average is better fallback
+- KV.put with Python string → JS UTF-16 string doubles memory (2× expansion); use binary (bytes→Uint8Array is 1:1) to stay under 128MB limit
+- JavaScript =null= returned from KV.get is a JsProxy in Pyodide, NOT Python =None=; check =getattr(buf, "byteLength", 0) > 0= instead of =is not None=

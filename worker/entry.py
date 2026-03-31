@@ -6,7 +6,6 @@ Serves:
   GET /chart.svg → SVG chart (also accepts /chart.png)
 """
 
-import io
 import json
 from urllib.parse import urlparse, parse_qs
 
@@ -490,35 +489,65 @@ def _build_landing_html() -> str:
 class Default(WorkerEntrypoint):
 
     async def _fetch_csv(self) -> tuple[str, str]:
-        """Fetch alarms CSV from KV cache or GitHub. Filters to rows >= 2026-02-27."""
-        cached = await self.env.CACHE.get("csv:alarms:v3")
-        if cached:
+        """Fetch alarms CSV from KV cache or GitHub. Filters to rows >= 2026-02-27.
+
+        Stored zlib-compressed as binary (Uint8Array): ~1.5 MB vs ~6.7 MB uncompressed,
+        keeping KV.put peak well under the 128 MB Pyodide limit.
+        """
+        import zlib
+        from js import Uint8Array as JsUint8Array
+        cached_buf = await self.env.CACHE.get("csv:alarms:v6", to_js({"type": "arrayBuffer"}))
+        # JS null may not convert to Python None in Pyodide; check byteLength instead
+        if cached_buf is not None and getattr(cached_buf, "byteLength", 0) > 0:
             meta = await self.env.CACHE.get("csv:meta") or ""
-            return cached, meta
+            compressed = bytes(JsUint8Array.new(cached_buf).to_py())
+            return zlib.decompress(compressed).decode("utf-8"), meta
 
         resp = await js_fetch(ALARMS_CSV_URL)
-        text = await resp.text()
         last_mod = resp.headers.get("Last-Modified") or ""
 
-        # Filter to recent rows to stay within the 128 MB worker memory limit.
-        # The full CSV (~122K rows) is too large; we only need data from Feb 27.
-        CUTOFF = "2026-02-27"
-        buf = io.StringIO(text)
-        header = buf.readline()
-        cols = header.strip().split(",")
-        try:
-            time_idx = cols.index("time")
-        except ValueError:
-            time_idx = 1
-        lines = [header]
-        for line in buf:
-            parts = line.split(",", time_idx + 1)
-            if len(parts) > time_idx and parts[time_idx].strip('"')[:10] >= CUTOFF:
-                lines.append(line)
-        del text
-        filtered = "".join(lines)
+        CUTOFF = b"2026-02-27"
+        reader = resp.body.getReader()
+        header_bytes = None
+        time_idx = 1
+        kept = []
+        partial = b""
 
-        await self.env.CACHE.put("csv:alarms:v3", filtered, to_js({"expirationTtl": 30 * 60}))
+        while True:
+            chunk = await reader.read()
+            if chunk.done:
+                break
+            partial += bytes(chunk.value.to_py())
+            while b"\n" in partial:
+                nl = partial.index(b"\n")
+                line = partial[:nl + 1]
+                partial = partial[nl + 1:]
+                if header_bytes is None:
+                    header_bytes = line
+                    kept.append(line)
+                    cols = line.rstrip(b"\n").decode("utf-8").split(",")
+                    try:
+                        time_idx = cols.index("time")
+                    except ValueError:
+                        time_idx = 1
+                else:
+                    parts = line.split(b",", time_idx + 1)
+                    if len(parts) > time_idx and parts[time_idx].strip(b'"')[:10] >= CUTOFF:
+                        kept.append(line)
+
+        if partial and header_bytes is not None:
+            parts = partial.split(b",", time_idx + 1)
+            if len(parts) > time_idx and parts[time_idx].strip(b'"')[:10] >= CUTOFF:
+                kept.append(partial)
+        del partial
+
+        join_bytes = b"".join(kept)
+        del kept
+        compressed = zlib.compress(join_bytes)
+        filtered = join_bytes.decode("utf-8")
+        del join_bytes
+
+        await self.env.CACHE.put("csv:alarms:v6", to_js(compressed), to_js({"expirationTtl": 30 * 60}))
         await self.env.CACHE.put("csv:meta", last_mod, to_js({"expirationTtl": 30 * 60}))
         return filtered, last_mod
 
