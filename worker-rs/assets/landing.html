@@ -109,6 +109,23 @@
       content: '';
       animation: ellipsis 2s steps(4, end) infinite;
     }
+    .sidenote {
+      float: right; clear: right;
+      width: 200px; margin-left: 1.5em;
+      font-size: 0.72rem; color: #aaa; line-height: 1.5;
+    }
+    input.margin-toggle { display: none; }
+    label.margin-toggle {
+      cursor: pointer; color: #888;
+      vertical-align: super; font-size: 0.65rem; line-height: 0;
+    }
+    @media (max-width: 600px) {
+      .sidenote { display: none; }
+      .margin-toggle:checked + .sidenote {
+        display: block; float: none; width: auto;
+        margin: 0.25em 0 0;
+      }
+    }
   </style>
 </head>
 <body>
@@ -441,11 +458,15 @@
       if (sp.has('area') || sp.has('start') || sp.has('style') || sp.has('threat') || sp.has('forecast')) submitChart();
     })();
   </script>
-  <p style="margin-top:2em;font-size:0.78rem;color:#888;line-height:1.6">
-    <span style="white-space:nowrap">Data: <a href="https://github.com/yuval-harpaz/alarms" style="color:#888">yuval-harpaz/alarms</a>, <a href="https://www.tzevaadom.co.il/" style="color:#888;font-family:'Alef',sans-serif">צופר - צבע אדום</a></span> ·
-    <span style="white-space:nowrap">App: <a href="https://github.com/aviad/Israel-alarms-timeline-by-locality" style="color:#888">aviad/Israel-alarms-timeline-by-locality</a></span> ·
-    <span style="white-space:nowrap">Forecast model: <a href="https://github.com/ofir-reich/missile-alarms-prediction" style="color:#888">ofir-reich/missile-alarms-prediction</a></span> ·
-    <span style="white-space:nowrap">Chart design inspired by <a href="https://www.edwardtufte.com" style="color:#888">Edward Tufte</a></span>
+  <p style="margin-top:2em;font-size:0.78rem;color:#888;line-height:1.8">
+    <span style="white-space:nowrap">Data: <a href="https://github.com/yuval-harpaz/alarms" style="color:#888">yuval-harpaz/alarms</a>, <a href="https://www.tzevaadom.co.il/" style="color:#888;font-family:'Alef',sans-serif">צופר - צבע אדום</a></span><br>
+    <span style="white-space:nowrap">App: <a href="https://github.com/aviad/Israel-alarms-timeline-by-locality" style="color:#888">aviad/Israel-alarms-timeline-by-locality</a></span><br>
+    <span style="white-space:nowrap">Forecast model: <a href="https://github.com/ofir-reich/missile-alarms-prediction" style="color:#888">ofir-reich/missile-alarms-prediction</a></span><br>
+    <span style="white-space:nowrap">Chart design inspired by <a href="https://www.edwardtufte.com" style="color:#888">Edward Tufte</a></span><br>
+    <span style="white-space:nowrap"><a href="https://github.com/aviad/Israel-alarms-timeline-by-locality/issues/new" style="color:#888">Feedback / Issues</a></span><br>
+    <input type="checkbox" id="sn-contact" class="margin-toggle">
+    <span class="sidenote"><sup>1</sup> bonfire-14-fitters@icloud.com</span>
+    <span style="white-space:nowrap"><a href="mailto:bonfire-14-fitters@icloud.com" style="color:#888">Contact</a><label for="sn-contact" class="margin-toggle">1</label></span>
   </p>
 </body>
 </html>
