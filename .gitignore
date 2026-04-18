@@ -8,3 +8,6 @@ alarms_frequency.png
 __pycache__
 worker/python_modules/
 **/*.svg
+**/.wrangler/
+.claude_session
+worker-rs/target/

@@ -1,7 +1,9 @@
-name = "alarms-py"
-main = "entry.py"
+name = "alarms"
+main = "build/worker/shim.mjs"
 compatibility_date = "2026-03-08"
-compatibility_flags = ["python_workers"]
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
 
 [limits]
 cpu_ms = 45000

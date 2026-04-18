@@ -1,89 +1,109 @@
 #+title: Alarms Graph — Deployment & Architecture
-#+date: <2026-03-16 Sun>
+#+date: <2026-04-17 Thu>
 
-* Status: DEPLOYED AND WORKING ✓
+* Status: DEPLOYED AND WORKING ✓ (Rust/WASM)
 
-Live at https://alarms.metta.workers.dev (current)
-Also at https://alarms-graph.unite-worlds.workers.dev (old account)
+Live at https://alarms.metta.workers.dev (Rust worker — current)
+Rollback at https://alarms-py.metta.workers.dev (Python/Pyodide — kept 7 days)
+Old account: https://alarms-graph.unite-worlds.workers.dev
 
 * Architecture
 
-** =alarms_core.py= — shared pure-Python logic (~563 lines, was 2184)
-- =render_chart(times, label, bin_hours, start_date, data_cutoff, style, fmt, forecast, all_records, city_filter, ...)= → SVG bytes
-  - Pure SVG string building — no matplotlib/numpy
+** Pure-Python modules (CLI + executable spec)
+
+These stay Python for =alarms_graph.py= CLI and serve as the reference
+implementation against which the Rust port was validated.
+
+*** =alarms_core.py= — shared pure-Python logic (~391 lines)
+- =render_chart(...)= → SVG string — pure string building, no matplotlib
   - Tufte-style: EB Garamond font, night shading, lines/dots modes
   - Forecast annotation: economist-style curved line + label
   - Night mode (8pm–6am): switches label to "tonight (until 7am)"
 - =compute_prediction(...)= — extracted for header/desc embedding
-- Re-exports everything from split modules for backward compatibility
 - No external dependencies — pure stdlib
 
-** =city_translations.py= — city name mapping
+*** =city_translations.py= — city name mapping
 - =CITY_TRANSLATIONS= — 1627 Hebrew→English city names
 
-** =israel_time.py= — Israel time utilities
+*** =israel_time.py= — Israel time utilities
 - =_israel_utc_offset()=, =_epoch_to_israel()= — Israel DST (last Friday of March rule)
 
-** =data_loading.py= — CSV and API loading
+*** =data_loading.py= — CSV and API loading
 - =load_alerts(csv_text, area_filter, threat, start)= → =(times, seen_ids)=
 - =load_api_alerts(api_data, area_filter, threat, start, seen_ids)= → =times=
 - =load_alerts_rich= / =load_api_alerts_rich= — event-level records for Ridge model
 - =ROCKET_DESC= constant
 
-** =forecast.py= — prediction models (pure Python)
+*** =forecast.py= — prediction models (pure Python)
 - =predict_remaining(times, now, method)= — "simple" (3-feature linear) or "advanced" (rate-sub blend)
-  - Rate-sub: predict daily total, subtract observed
-  - Blend: w×rate_sub + (1-w)×rate, w=hours_remaining/24
-  - Backtest MAE: blend 1.54, rate-sub 1.81, rate 1.63
+  - Blend: w×rate_sub + (1-w)×rate, w=hours_remaining/24; MAE 1.54
 - =predict_remaining_ridge(all_records, city, now, alpha=10)= — 34-feature Ridge regression
-  - Rate-sub framing, 8 cutoff hours × prior days training
-  - Features: wave stats, interaction terms, global/city-level
 - =predict_night_rolling(times, now)= — 7-night rolling average (8pm–midnight fallback)
 - =predict_night_ridge(all_records, city, now)= — 7am–7am Ridge (midnight–6am)
-- Night mode selection: Ridge beats naive by 35% after midnight; rolling average before midnight
+- Night mode selection: Ridge beats naive by 35% after midnight; rolling avg before midnight
 
-** =alarms_graph.py= — CLI wrapper
+*** =alarms_graph.py= — CLI wrapper
 - argparse, requests, file-based cache
 - PNG export via cairosvg with embedded ETBembo fonts as base64
 - =--forecast off/simple/advanced/ridge=
 
-** =worker/entry.py= — Cloudflare Worker
-- =WorkerEntrypoint= with =async def fetch(request)=
-- Landing page: Hebrew searchable combobox (1627 cities), date picker, lines/dots, threat filter (rockets/UAVs/both), forecast radio (off/simple/full)
-- Two-phase loading: chart renders immediately, forecast overlaid async
-- Progress messages during load
-- Prediction displayed as stat card above chart + embedded in SVG =<desc id="pred-data">=
-- KV caching: CSV 30-min TTL, API 2-min TTL, global features 30-min TTL
-- CSV pre-filtered to rows ≥ 2026-02-27 during streaming (full CSV ~13.5MB, filtered ~6.7MB)
-- CSV stored in KV as binary (Uint8Array) — bytes→Uint8Array is 1:1, avoiding the 2× JS UTF-16 expansion that caused OOM at KV.put
-- SVG/PNG download buttons, copy icon, PNG rasterized client-side via canvas
-- Mobile-responsive: stacked form, 44px touch targets, scrollable chart, deeplinks
-- Credits footer: yuval-harpaz/alarms, forecast model, Tufte style
-- Deeplinks: URL params auto-populate form and generate chart
+** Rust Worker (=worker-rs/=) — the live worker
 
-** =worker/wrangler.toml=
+*** =src/entry.rs= — Worker entrypoint
+- =#[event(fetch)]= handler; manual routing (match on path string).
+- Routes: =GET /= (HTML), =GET /chart.svg=, =GET /chart.png=, =GET /healthz=, 404 fallback.
+- Landing page: =include_str!("../assets/landing.html")= + placeholder substitution
+  (=__DEFAULT_AREA__=, =__DEFAULT_START__=, =__CITIES_JSON__=).
+- Two-phase loading handled client-side (JS calls =/chart.svg= twice — forecast=off, then full).
+- KV key prefix =rs:= (=rs:csv:alarms:v1= 30-min TTL, =rs:api:v1:{epoch_min}= 2-min TTL).
+- CSV streaming: full body fetched, filtered to rows ≥2026-02-27 before KV store.
+- Hebrew city names decoded via =url_decode= (collects bytes before UTF-8 conversion).
+
+*** =src/kv_cache.rs= — KV wrapper
+- =get_text/put_text=, =get_bytes/put_bytes=, =get_zlib/put_zlib=.
+- Zlib+base64: compressed bytes stored as KV text — avoids JSON-array corruption in local dev.
+
+*** =src/svg.rs= — SVG renderer (port of =alarms_core.py=)
+- =render_chart(RenderParams)= → =Result<String, String>=.
+- Numeric format strings match Python exactly (=:.1=, =:.2=, =:.0=).
+- Night shading, lines/dots, Tufte ticks, forecast curve, =<desc id="pred-data">= block.
+
+*** =src/forecast.rs= — prediction models (port of =forecast.py=)
+- All four models: simple/advanced, ridge, night-rolling, night-ridge.
+- =solve_normal_equation= (Gauss-Jordan): β = (XᵀX + αI)⁻¹ Xᵀy.
+- Insertion-order-preserving =city_rank_pct= (Vec alongside HashMap) to match Python dict order.
+
+*** =src/data_loading.rs= — CSV/API loading (port of =data_loading.py=)
+- =IsraelTime= struct (Ord-derived, parseable, epoch-constructable).
+- All four load functions with full filter parity.
+
+*** =src/israel_time.rs= — Israel time (port of =israel_time.py=)
+- =epoch_to_israel=, =ymd_to_epoch=, =days_to_ymd=; DST last Friday of March.
+
+*** =src/city_translations.rs= — city map (generated by =tools/gen_city_translations.py=)
+- Sorted =&[(&str,&str)]= static slice; binary search lookup; 1627 entries.
+
+*** =worker-rs/wrangler.toml=
 #+begin_src toml
-name = "alarms-graph"
-main = "entry.py"
+name = "alarms"
+main = "build/worker/shim.mjs"
 compatibility_date = "2026-03-08"
-compatibility_flags = ["python_workers"]
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[limits]
+cpu_ms = 45000
 
 [[kv_namespaces]]
 binding = "CACHE"
-id = "bacce09fc96f4951a5447b13c8433cb5"
+id = "b30ee945018a4393b61c52f756fac0f0"
 #+end_src
-
-** Symlinks in =worker/=
-- =alarms_core.py= → =../alarms_core.py=
-- =forecast.py= → =../forecast.py=
-- =city_translations.py= → =../city_translations.py=
-- =israel_time.py= → =../israel_time.py=
-- =data_loading.py= → =../data_loading.py=
 
 * File Structure
 
 #+begin_src
-alarms_core.py        ← pure SVG render, shared logic (+ re-exports)
+alarms_core.py        ← pure SVG render, shared logic (CLI + spec)
 city_translations.py  ← 1627 Hebrew→English city names
 israel_time.py        ← Israel DST offset + epoch conversion
 data_loading.py       ← CSV/API load functions
@@ -91,14 +111,28 @@ forecast.py           ← prediction models (simple/advanced/ridge/night)
 alarms_graph.py       ← CLI: cairosvg PNG, argparse, cache
 cities.csv            ← city translations source
 
-worker/
-├── entry.py               ← WorkerEntrypoint, KV caching, full UI
-├── wrangler.toml          ← config + KV binding
-├── alarms_core.py         → symlink
-├── forecast.py            → symlink
-├── city_translations.py   → symlink
-├── israel_time.py         → symlink
-└── data_loading.py        → symlink
+worker-rs/            ← LIVE WORKER (Rust/WASM)
+├── Cargo.toml
+├── wrangler.toml
+├── src/
+│   ├── lib.rs
+│   ├── entry.rs            ← Worker entrypoint, routing, KV, HTML
+│   ├── kv_cache.rs         ← zlib+base64 KV wrapper
+│   ├── data_loading.rs     ← CSV/API parsing
+│   ├── forecast.rs         ← all 4 prediction models
+│   ├── svg.rs              ← SVG renderer
+│   ├── israel_time.rs      ← DST logic
+│   └── city_translations.rs ← generated static map
+├── assets/
+│   └── landing.html        ← HTML template
+└── tests/
+    └── fixtures/
+        └── ridge_intermediates.json
+
+worker/               ← Python rollback (alarms-py.metta.workers.dev, retire after 7 days)
+tools/
+├── gen_city_translations.py
+└── parity/diff.py
 #+end_src
 
 * Cloudflare Details
@@ -106,30 +140,48 @@ worker/
 | Item           | Value                                         |
 |----------------+-----------------------------------------------|
 | Account ID     | =e4d4d64090d3c4946b9a40c93eea4995=  |
-| Worker name    | =alarms=                            |
+| Worker name    | =alarms= (Rust)                     |
 | Live URL       | https://alarms.metta.workers.dev    |
+| Rollback       | https://alarms-py.metta.workers.dev |
 | KV namespace   | =b30ee945018a4393b61c52f756fac0f0=  |
 | KV binding     | =CACHE=                                       |
 | Plan           | Workers Paid ($5/mo)                          |
-| Bundle size    | ~80KB gzip                                    |
+| Bundle size    | 623KB upload / 261KB gzip                     |
 
-* Key Constraints
+* Key Constraints (post-migration)
 
-| Resource    | Limit       | Actual        | Notes                      |
-|-------------+-------------+---------------+----------------------------|
-| CPU/request | 30s (paid)  | ~700ms        | Pyodide cold start         |
-| Memory      | 128MB       | OK w/filter   | CSV filtered (~6.7MB); stored as binary to avoid 2× JS string expansion |
-| Worker size | 10MB (paid) | ~80KB         | No vendored packages       |
+| Resource    | Free limit  | Paid limit  | Actual (Rust) | Notes                              |
+|-------------+-------------+-------------+---------------+------------------------------------|
+| CPU/request | 10ms        | 30s         | ~2ms startup  | Was ~700ms (Pyodide cold start)    |
+| Memory      | 128MB       | 128MB       | <16MB         | Was ~80MB; zlib CSV still used     |
+| Worker size | 1MB         | 10MB        | 261KB gzip    | Was ~80KB Python but +Pyodide rt   |
+| Requests/d  | 100k/day    | unlimited   | low traffic   | See free-plan note below           |
+
+* Free Plan Consideration
+
+The Rust worker's 2ms startup and ~261KB bundle puts it well within
+free plan CPU limits (10ms/request). If daily requests stay under
+100k, downgrading to the free plan is viable. Watch for:
+- CPU spikes on Ridge forecast for large areas (many records to train on).
+- The free plan has a 10ms CPU limit *per request* — not wall-clock time.
+  Ridge on a large city (e.g. תל אביב) may exceed 10ms CPU.
+- Test with =wrangler tail= to observe actual CPU usage before downgrading.
 
 * Lessons Learned
 
+** Python Worker (historical)
 - =WorkerEntrypoint= only (=on_fetch= deprecated since wrangler 4.71.0)
 - =Response(bytes)= → garbled; must decode to =str= first
 - SVG in =<img>= blocks =@import=; use =<object>= instead
 - =zoneinfo= needs =tzdata= in Pyodide; moved to CLI only
 - =datetime.fromtimestamp()= uses system TZ (UTC on Cloudflare); use explicit conversion
+- KV.put with Python string → JS UTF-16 string doubles memory; use binary (Uint8Array)
+- JavaScript =null= from KV.get is a JsProxy in Pyodide, NOT Python =None=
+
+** Rust Worker
 - Israel DST: last *Friday* of March (not Sunday like EU)
-- Canvas sandboxes =<object>= SVGs; must fetch+embed Google Fonts as base64 for PNG export
-- 8pm Ridge forecast overfits with ~14 days training data; rolling average is better fallback
-- KV.put with Python string → JS UTF-16 string doubles memory (2× expansion); use binary (bytes→Uint8Array is 1:1) to stay under 128MB limit
-- JavaScript =null= returned from KV.get is a JsProxy in Pyodide, NOT Python =None=; check =getattr(buf, "byteLength", 0) > 0= instead of =is not None=
+- wrangler local KV stores =Vec<u8>= as JSON array of integers, not raw binary;
+  fix: base64-encode zlib output and store as KV text
+- =city_rank_pct= requires insertion-order-preserving key tracking (Vec + HashMap)
+  to match Python dict tiebreaking; plain HashMap iteration is non-deterministic
+- Canvas sandboxes =<object>= SVGs; fonts for PNG export must be base64-embedded client-side
